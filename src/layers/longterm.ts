@@ -17,6 +17,7 @@ export class LongTermMemoryLayer extends BaseMemoryLayer {
   private recentSurprises: Float64Array = new Float64Array(this.SURPRISE_BUFFER_SIZE);
   private surpriseIndex: number = 0;
   private surpriseCount: number = 0;
+  private static readonly MAX_CACHE_SIZE = 1000;
   private memoryCache: Map<string, MemoryEntry> = new Map();
   private vectorStorage: IVectorStorage | null = null;
   private reranker: VoyageReranker | null = null;
@@ -141,7 +142,8 @@ export class LongTermMemoryLayer extends BaseMemoryLayer {
       await this.vectorStorage.insert(memoryEntry);
     }
 
-    // Also cache locally
+    // Also cache locally (with eviction)
+    this.evictCacheIfNeeded();
     this.memoryCache.set(id, memoryEntry);
 
     return memoryEntry;
@@ -185,6 +187,7 @@ export class LongTermMemoryLayer extends BaseMemoryLayer {
           const reranked = await this.reranker.rerank(
             queryText,
             results.map(r => r.content),
+            limit,
           );
           // Rebuild results in reranked order with reranker scores
           const originalResults = [...results];
@@ -300,12 +303,27 @@ export class LongTermMemoryLayer extends BaseMemoryLayer {
           timestamp: isNaN(rawTs.getTime()) ? new Date() : rawTs,
           metadata: result.metadata as MemoryEntry['metadata'],
         };
+        this.evictCacheIfNeeded();
         this.memoryCache.set(id, memory);
         return memory;
       }
     }
 
     return null;
+  }
+
+  /**
+   * Evict oldest cache entries when exceeding max size (simple LRU via Map insertion order)
+   */
+  private evictCacheIfNeeded(): void {
+    if (this.memoryCache.size >= LongTermMemoryLayer.MAX_CACHE_SIZE) {
+      const evictCount = Math.floor(LongTermMemoryLayer.MAX_CACHE_SIZE * 0.1);
+      const iterator = this.memoryCache.keys();
+      for (let i = 0; i < evictCount; i++) {
+        const key = iterator.next().value;
+        if (key) this.memoryCache.delete(key);
+      }
+    }
   }
 
   async delete(id: string): Promise<boolean> {

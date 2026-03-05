@@ -9,6 +9,13 @@ import { listProjects } from '../utils/config.js';
 import type { DashboardServer } from './server.js';
 import { getContextMonitor } from '../monitoring/context-monitor.js';
 import { getProactiveFlushManager } from '../utils/proactive-flush.js';
+import type { DecisionType } from '../trace/decision-trace.js';
+
+const VALID_DECISION_TYPES = new Set<string>([
+  'architecture', 'implementation', 'technology', 'debugging',
+  'optimization', 'workflow', 'configuration', 'user_preference',
+  'tradeoff', 'rollback', 'other',
+]);
 
 export interface ApiRequest {
   params: Record<string, string>;
@@ -137,12 +144,13 @@ export function createApiRouter(titan: TitanMemory, server: DashboardServer): Ap
       method: 'GET',
       path: '/api/decisions',
       handler: async (req) => {
-        const limit = parseInt(req.query.limit || '50');
+        const limit = Math.min(parseInt(req.query.limit || '50', 10), 1000);
         const type = req.query.type as string | undefined;
         const status = req.query.status as 'pending' | 'success' | 'failure' | undefined;
+        const validatedType = type && VALID_DECISION_TYPES.has(type) ? type as DecisionType : undefined;
 
         return titan.queryDecisions({
-          type: type as any,
+          type: validatedType,
           outcomeStatus: status,
           limit,
         });
@@ -164,8 +172,9 @@ export function createApiRouter(titan: TitanMemory, server: DashboardServer): Ap
           tags?: string[];
         };
 
+        const validatedBodyType = VALID_DECISION_TYPES.has(body.type) ? body.type as DecisionType : 'other' as DecisionType;
         return titan.traceDecision({
-          type: body.type as any,
+          type: validatedBodyType,
           summary: body.summary,
           description: body.description,
           rationale: body.rationale,
@@ -282,7 +291,7 @@ export function createApiRouter(titan: TitanMemory, server: DashboardServer): Ap
         }
 
         let memory: MemoryEntry;
-        if (body.layer) {
+        if (body.layer != null && body.layer >= 2 && body.layer <= 5) {
           memory = await titan.addToLayer(body.layer as MemoryLayer, body.content, { tags: body.tags });
         } else {
           memory = await titan.add(body.content, { tags: body.tags });

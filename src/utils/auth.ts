@@ -51,21 +51,29 @@ export function generateToken(): string {
 }
 
 /**
- * Validate a dashboard token
+ * Constant-time token comparison to prevent timing side-channel attacks
+ */
+function timingSafeTokenCompare(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
+
+/**
+ * Validate a dashboard token (timing-safe)
  */
 export function validateDashboardToken(token: string | undefined): boolean {
   if (!authConfig.enabled) return true;
   if (!token) return false;
-  return authConfig.dashboardTokens.includes(token);
+  return authConfig.dashboardTokens.some(t => timingSafeTokenCompare(t, token));
 }
 
 /**
- * Validate an A2A token
+ * Validate an A2A token (timing-safe)
  */
 export function validateA2AToken(token: string | undefined): boolean {
   if (!authConfig.enabled) return true;
   if (!token) return false;
-  return authConfig.a2aTokens.includes(token);
+  return authConfig.a2aTokens.some(t => timingSafeTokenCompare(t, token));
 }
 
 /**

@@ -48,6 +48,16 @@ Titan Memory v2.1 adds an optional **LLM Turbo Layer** that pushes benchmark sco
 
 **Benchmark improvement:** 84.2% → **90.7%** with LLM mode enabled. Key wins: info-extraction +20pts, knowledge-updates +12pts.
 
+### v2.1.1 — Performance & Hardening (March 2026)
+
+- Recall pipeline now batches highlight calls per-memory instead of per-sentence — significant latency reduction
+- Voyage reranker optimized with `topN` parameter — halves API cost per recall
+- LRU cache eviction on long-term memory cache (capped at 1,000 entries)
+- Input validation hardened across dashboard API endpoints
+- Request body size limits added to dashboard server
+- Dependencies updated to latest compatible versions
+- Removed unused production dependency (`dotenv`)
+
 ---
 
 <details>

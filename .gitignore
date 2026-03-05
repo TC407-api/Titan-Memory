@@ -12,6 +12,9 @@ data/
 .env.local
 *.local
 
+# Runtime config (may contain sensitive settings — use config.example.json as template)
+config.json
+
 # IDE
 .idea/
 .vscode/

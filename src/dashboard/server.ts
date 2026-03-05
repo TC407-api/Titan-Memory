@@ -267,9 +267,19 @@ export class DashboardServer {
    * Parse request body as JSON
    */
   private parseBody(req: http.IncomingMessage): Promise<unknown> {
+    const MAX_BODY_SIZE = 1024 * 1024; // 1MB
     return new Promise((resolve, reject) => {
       let data = '';
-      req.on('data', chunk => (data += chunk));
+      let size = 0;
+      req.on('data', chunk => {
+        size += chunk.length;
+        if (size > MAX_BODY_SIZE) {
+          req.destroy();
+          reject(new Error('Request body too large (max 1MB)'));
+          return;
+        }
+        data += chunk;
+      });
       req.on('end', () => {
         try {
           resolve(data ? JSON.parse(data) : null);

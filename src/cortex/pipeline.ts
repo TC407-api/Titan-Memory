@@ -123,16 +123,21 @@ export class CortexPipeline {
 
     const totalSentences = allSentences.length;
 
-    // Step 2: Score each sentence via semantic highlighting
+    // Step 2: Score sentences via semantic highlighting (batched per memory)
     if (this.highlighter) {
-      // Score all sentences against the query
-      for (let i = 0; i < allSentences.length; i++) {
-        const result = await this.highlighter.highlight(
-          query,
-          allSentences[i].text,
-          0 // Get all scores, we filter later
-        );
-        allSentences[i].score = result.sentenceProbabilities[0] ?? 0;
+      // Batch by memory: one highlight call per memory instead of per sentence
+      for (const memory of memories) {
+        const result = await this.highlighter.highlight(query, memory.content, 0);
+        const memorySentences = splitIntoSentences(memory.content);
+        // Map scores back to the allSentences array
+        for (let i = 0; i < allSentences.length; i++) {
+          if (allSentences[i].sourceMemoryId === memory.id) {
+            const sentenceIdx = memorySentences.indexOf(allSentences[i].text);
+            allSentences[i].score = sentenceIdx >= 0 && sentenceIdx < result.sentenceProbabilities.length
+              ? result.sentenceProbabilities[sentenceIdx]
+              : 0;
+          }
+        }
       }
     } else {
       // Fallback: simple term overlap scoring
