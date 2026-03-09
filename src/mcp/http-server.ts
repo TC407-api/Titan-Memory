@@ -17,6 +17,7 @@ import { ToolDefinitions, ToolHandler } from './tools.js';
 import { Auth0Verifier, VerifiedToken } from './auth/auth0-verifier.js';
 import { createAuthMiddleware, AuthenticatedRequest } from './auth/middleware.js';
 import { createDiscoveryRouter } from './discovery.js';
+import { hasRequiredScopes } from './auth/scopes.js';
 import { isLocalhost } from '../utils/auth.js';
 
 const SERVER_NAME = 'titan-memory';
@@ -161,14 +162,30 @@ export function createHttpApp(config: HttpServerConfig = {}): Express {
     }
   }
 
-  // MCP endpoint with auth
-  if (authMiddleware) {
-    app.use('/mcp', authMiddleware);
+  // Fail-closed: refuse to start without any authentication mode
+  if (!authMiddleware) {
+    throw new Error('No authentication mode configured. Set AUTH0_DOMAIN + AUTH0_AUDIENCE, or enable allowLocalhostBypass.');
   }
+
+  // MCP endpoint with auth
+  app.use('/mcp', authMiddleware);
 
   // Handle POST /mcp - MCP protocol messages
   app.post('/mcp', async (req: AuthenticatedRequest, res: Response) => {
     try {
+      // Tool-level scope enforcement
+      if (req.body?.method === 'tools/call' && req.body?.params?.name) {
+        const toolName = req.body.params.name;
+        const permissions = req.auth?.token?.scopes ?? [];
+        if (!req.auth?.bypassed && !hasRequiredScopes(toolName, permissions)) {
+          res.status(403).json({
+            jsonrpc: '2.0', id: req.body.id,
+            error: { code: -32600, message: `Insufficient scopes for tool: ${toolName}` },
+          });
+          return;
+        }
+      }
+
       // Check for existing session
       const sessionId = req.headers['mcp-session-id'] as string | undefined;
       let transport: StreamableHTTPServerTransport;
