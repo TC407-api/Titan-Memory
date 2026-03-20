@@ -123,13 +123,17 @@ export class CortexPipeline {
 
     const totalSentences = allSentences.length;
 
-    // Step 2: Score sentences via semantic highlighting (batched per memory)
+    // Step 2: Score sentences via semantic highlighting (concurrent per memory)
     if (this.highlighter) {
-      // Batch by memory: one highlight call per memory instead of per sentence
-      for (const memory of memories) {
-        const result = await this.highlighter.highlight(query, memory.content, 0);
+      // Concurrent highlight calls: all memories in parallel instead of sequential
+      const highlightResults = await Promise.all(
+        memories.map(memory => this.highlighter!.highlight(query, memory.content, 0))
+      );
+      // Map scores back to the allSentences array
+      for (let mi = 0; mi < memories.length; mi++) {
+        const memory = memories[mi];
+        const result = highlightResults[mi];
         const memorySentences = splitIntoSentences(memory.content);
-        // Map scores back to the allSentences array
         for (let i = 0; i < allSentences.length; i++) {
           if (allSentences[i].sourceMemoryId === memory.id) {
             const sentenceIdx = memorySentences.indexOf(allSentences[i].text);

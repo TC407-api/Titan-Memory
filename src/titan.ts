@@ -1725,15 +1725,17 @@ export class TitanMemory {
       }));
     }
 
-    const results: HighlightedMemory[] = [];
-    for (const memory of memories) {
-      const highlighted = await this.semanticHighlighter.highlight(
-        query,
-        memory.content,
-        threshold
-      );
+    // Concurrent highlight calls: all memories in parallel instead of sequential
+    const highlightResults = await Promise.all(
+      memories.map(memory =>
+        this.semanticHighlighter!.highlight(query, memory.content, threshold)
+      )
+    );
+
+    return memories.map((memory, i) => {
+      const highlighted = highlightResults[i];
       const highlightedContent = highlighted.highlightedSentences.join(' ');
-      results.push({
+      return {
         ...memory,
         highlightedContent,
         highlightMetadata: {
@@ -1741,10 +1743,8 @@ export class TitanMemory {
           originalLength: memory.content.length,
           highlightedLength: highlightedContent.length,
         },
-      });
-    }
-
-    return results;
+      };
+    });
   }
 
   /**

@@ -73,6 +73,8 @@ describe('MCP Tool Definitions', () => {
 });
 
 describe('ToolHandler', () => {
+  // Recall tests hit Zilliz Cloud which can be slow
+  jest.setTimeout(30000);
   let handler: ToolHandler;
 
   beforeEach(() => {
