@@ -37,6 +37,30 @@ export const ToolScopes: Record<string, Scope[]> = {
   // Feedback operations
   titan_feedback: [Scopes.FEEDBACK],
 
+  // Read operations (additional)
+  titan_category_summary: [Scopes.READ],
+  titan_miras_stats: [Scopes.READ],
+  titan_noop_stats: [Scopes.READ],
+  titan_patterns: [Scopes.READ],
+  titan_sufficiency: [Scopes.READ],
+  titan_trace: [Scopes.READ],
+  titan_why: [Scopes.READ],
+  titan_benchmark: [Scopes.READ],
+  titan_focus_list: [Scopes.READ],
+  titan_scratchpad: [Scopes.READ],
+
+  // Write operations (additional)
+  titan_compress: [Scopes.WRITE],
+  titan_expand: [Scopes.WRITE],
+  titan_link: [Scopes.WRITE],
+  titan_classify: [Scopes.WRITE],
+  titan_suggest: [Scopes.WRITE],
+  titan_focus_add: [Scopes.WRITE],
+  titan_focus_remove: [Scopes.WRITE],
+  titan_focus_clear: [Scopes.WRITE],
+  titan_noop: [Scopes.WRITE],
+  titan_intent: [Scopes.WRITE],
+
   // Admin operations
   titan_flush: [Scopes.ADMIN],
   titan_prune: [Scopes.ADMIN],

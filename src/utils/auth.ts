@@ -19,7 +19,7 @@ export interface AuthConfig {
 }
 
 const DEFAULT_AUTH_CONFIG: AuthConfig = {
-  enabled: process.env.NODE_ENV === 'production',
+  enabled: process.env.TITAN_AUTH_DISABLED !== 'true',
   dashboardTokens: process.env.TITAN_DASHBOARD_TOKENS?.split(',').filter(Boolean) || [],
   a2aTokens: process.env.TITAN_A2A_TOKENS?.split(',').filter(Boolean) || [],
   tokenHeader: 'X-Titan-Token',
@@ -27,6 +27,13 @@ const DEFAULT_AUTH_CONFIG: AuthConfig = {
 };
 
 let authConfig: AuthConfig = { ...DEFAULT_AUTH_CONFIG };
+
+// Startup warning: auth enabled but no tokens configured
+if (DEFAULT_AUTH_CONFIG.enabled &&
+    DEFAULT_AUTH_CONFIG.dashboardTokens.length === 0 &&
+    DEFAULT_AUTH_CONFIG.a2aTokens.length === 0) {
+  console.error('[titan-memory] WARNING: Auth is enabled but no TITAN_DASHBOARD_TOKENS or TITAN_A2A_TOKENS are configured. All authenticated requests will be rejected unless using localhost bypass.');
+}
 
 /**
  * Initialize auth configuration

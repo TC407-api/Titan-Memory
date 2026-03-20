@@ -1,0 +1,29 @@
+name: PR Code Review
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run code review
+        uses: anthropics/claude-code-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          direct_prompt: |
+            Review this PR for:
+            1. Code quality and best practices
+            2. Security vulnerabilities (OWASP top 10)
+            3. Performance issues
+            4. Convex schema changes must be ADDITIVE only
+            5. No secrets or credentials in code
+            6. No fake structured data or hardcoded ratings
+            Post a summary comment on the PR.
+          timeout_minutes: 10

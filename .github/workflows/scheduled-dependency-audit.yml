@@ -1,0 +1,45 @@
+name: Weekly Dependency Audit
+on:
+  schedule:
+    - cron: '0 10 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run npm audit
+        run: |
+          npm audit --json > audit-report.json 2>&1 || true
+          echo "## Dependency Audit Report" >> $GITHUB_STEP_SUMMARY
+          if [ -s audit-report.json ]; then
+            VULNS=$(cat audit-report.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('metadata',{}).get('vulnerabilities',{}))" 2>/dev/null || echo "Parse error")
+            echo "Vulnerabilities found: $VULNS" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No vulnerabilities found" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Create issue if vulnerabilities found
+        if: always()
+        run: |
+          HIGH=$(cat audit-report.json | python3 -c "import sys,json; d=json.load(sys.stdin); v=d.get('metadata',{}).get('vulnerabilities',{}); print(v.get('high',0)+v.get('critical',0))" 2>/dev/null || echo "0")
+          if [ "$HIGH" != "0" ]; then
+            gh issue create --title "Security: $HIGH high/critical vulnerabilities found" \
+              --body "Weekly dependency audit found vulnerabilities. Run \`npm audit\` for details." \
+              --label "security" || true
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
