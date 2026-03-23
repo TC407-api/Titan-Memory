@@ -691,14 +691,20 @@ export class TitanMemory {
     const limit = options?.limit || 10;
     const mode = options?.mode || 'full';
 
-    // Query all target layers in parallel
-    const queryPromises = targetLayers.map(layerId => {
-      const layer = this.layers.get(layerId);
-      if (!layer) return Promise.resolve(null);
-      return layer.query(query, { ...options, limit: limit * 2 }); // Get extra for fusion
-    });
+    // Query all target layers with bounded concurrency
+    const allResults: (QueryResult | null)[] = [];
+    const concurrencyLimit = 5;
+    for (let i = 0; i < targetLayers.length; i += concurrencyLimit) {
+      const chunk = targetLayers.slice(i, i + concurrencyLimit);
+      const chunkResults = await Promise.all(chunk.map(layerId => {
+        const layer = this.layers.get(layerId);
+        if (!layer) return Promise.resolve(null);
+        return layer.query(query, { ...options, limit: limit * 2 }); // Get extra for fusion
+      }));
+      allResults.push(...chunkResults);
+    }
 
-    const results = (await Promise.all(queryPromises)).filter(
+    const results = allResults.filter(
       (r): r is QueryResult => r !== null
     );
 
@@ -1725,12 +1731,18 @@ export class TitanMemory {
       }));
     }
 
-    // Concurrent highlight calls: all memories in parallel instead of sequential
-    const highlightResults = await Promise.all(
-      memories.map(memory =>
-        this.semanticHighlighter!.highlight(query, memory.content, threshold)
-      )
-    );
+    // Bounded concurrent highlight calls to avoid resource exhaustion
+    const highlightResults: Awaited<ReturnType<typeof this.semanticHighlighter.highlight>>[] = [];
+    const highlightLimit = 5;
+    for (let i = 0; i < memories.length; i += highlightLimit) {
+      const chunk = memories.slice(i, i + highlightLimit);
+      const chunkResults = await Promise.all(
+        chunk.map(memory =>
+          this.semanticHighlighter!.highlight(query, memory.content, threshold)
+        )
+      );
+      highlightResults.push(...chunkResults);
+    }
 
     return memories.map((memory, i) => {
       const highlighted = highlightResults[i];

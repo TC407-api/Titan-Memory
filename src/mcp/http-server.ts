@@ -164,7 +164,17 @@ export function createHttpApp(config: HttpServerConfig = {}): Express {
 
   // Fail-closed: refuse to start without any authentication mode
   if (!authMiddleware) {
-    throw new Error('No authentication mode configured. Set AUTH0_DOMAIN + AUTH0_AUDIENCE, or enable allowLocalhostBypass.');
+    console.error('[titan-memory] FATAL: No authentication mode configured. Set AUTH0_DOMAIN + AUTH0_AUDIENCE, or enable allowLocalhostBypass.');
+    console.error('[titan-memory] The server will respond 503 to all /mcp requests until auth is configured.');
+
+    // Return a degraded server that responds 503 instead of crashing the process
+    app.use('/mcp', (_req: Request, res: Response) => {
+      res.status(503).json({
+        error: 'Service Unavailable',
+        message: 'No authentication mode configured. Set AUTH0_DOMAIN + AUTH0_AUDIENCE, or enable allowLocalhostBypass.',
+      });
+    });
+    return app;
   }
 
   // MCP endpoint with auth

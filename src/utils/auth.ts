@@ -28,8 +28,9 @@ const DEFAULT_AUTH_CONFIG: AuthConfig = {
 
 let authConfig: AuthConfig = { ...DEFAULT_AUTH_CONFIG };
 
-// Startup warning: auth enabled but no tokens configured
-if (DEFAULT_AUTH_CONFIG.enabled &&
+// Startup warning: auth enabled but no tokens configured (suppress in test environments)
+if (process.env.NODE_ENV !== 'test' &&
+    DEFAULT_AUTH_CONFIG.enabled &&
     DEFAULT_AUTH_CONFIG.dashboardTokens.length === 0 &&
     DEFAULT_AUTH_CONFIG.a2aTokens.length === 0) {
   console.error('[titan-memory] WARNING: Auth is enabled but no TITAN_DASHBOARD_TOKENS or TITAN_A2A_TOKENS are configured. All authenticated requests will be rejected unless using localhost bypass.');

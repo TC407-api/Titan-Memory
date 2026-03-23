@@ -123,11 +123,13 @@ export class CortexPipeline {
 
     const totalSentences = allSentences.length;
 
-    // Step 2: Score sentences via semantic highlighting (concurrent per memory)
+    // Step 2: Score sentences via semantic highlighting (bounded concurrency per memory)
     if (this.highlighter) {
-      // Concurrent highlight calls: all memories in parallel instead of sequential
-      const highlightResults = await Promise.all(
-        memories.map(memory => this.highlighter!.highlight(query, memory.content, 0))
+      // Bounded concurrent highlight calls to avoid resource exhaustion
+      const highlightResults = await limitConcurrency(
+        memories,
+        memory => this.highlighter!.highlight(query, memory.content, 0),
+        5
       );
       // Map scores back to the allSentences array
       for (let mi = 0; mi < memories.length; mi++) {
@@ -237,6 +239,18 @@ export class CortexPipeline {
       },
     };
   }
+}
+
+/**
+ * Run async operations with bounded concurrency to prevent resource exhaustion
+ */
+async function limitConcurrency<T, R>(items: T[], fn: (item: T) => Promise<R>, limit = 5): Promise<R[]> {
+  const results: R[] = [];
+  for (let i = 0; i < items.length; i += limit) {
+    const chunk = items.slice(i, i + limit);
+    results.push(...await Promise.all(chunk.map(fn)));
+  }
+  return results;
 }
 
 /**
