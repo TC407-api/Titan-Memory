@@ -58,7 +58,7 @@ export const ToolScopes: Record<string, Scope[]> = {
   titan_focus_add: [Scopes.WRITE],
   titan_focus_remove: [Scopes.WRITE],
   titan_focus_clear: [Scopes.WRITE],
-  titan_noop: [Scopes.WRITE],
+  titan_noop: [Scopes.READ],
   titan_intent: [Scopes.WRITE],
 
   // Admin operations
