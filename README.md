@@ -23,7 +23,7 @@
 
 <p align="center">
   <img alt="Version" src="https://img.shields.io/badge/version-2.1.0-blue">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-1%2C008%20passing-brightgreen">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-2%2C310%20passing-brightgreen">
   <img alt="Benchmarks" src="https://img.shields.io/badge/benchmarks-18%2F18%20passing-brightgreen">
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.4-blue">
   <img alt="MCP" src="https://img.shields.io/badge/MCP-compatible-purple">
@@ -47,6 +47,15 @@ Titan Memory v2.1 adds an optional **LLM Turbo Layer** that pushes benchmark sco
 | **Groq Support** | Ultra-low latency inference (~350ms/call) via Groq API with Llama 3.3 70B |
 
 **Benchmark improvement:** 84.2% → **90.7%** with LLM mode enabled. Key wins: info-extraction +20pts, knowledge-updates +12pts.
+
+### v2.1.2 — Security, Testing & Architecture (March 28, 2026)
+
+- **Security hardening**: WebSocket auth (token validation + localhost bypass), rate limiting (100 req/min per IP), CSP hardened (removed `unsafe-inline` for scripts), body size pre-check
+- **Test suite**: 1,888 → 2,310 tests (+422), 6 new test files covering compression, LLM client, A2A server, dashboard, MCP tools, and titan.ts branches
+- **Coverage**: Statements 75% → 83%, Branches 60% → 69%, Functions 72% → 79%, Lines 77% → 84%
+- **Architecture**: Extracted 5 delegate classes (Graph, Context, Learning, Validation, Cortex) from titan.ts god class. Replaced 400-line switch in handleToolCall with Map-based tool registry (28 handlers)
+- **Bug fixes**: Fixed cross-project domain-aware dedup, local-embedding partial config, reranker smart fetch (cost reduction)
+- **Tooling**: ESLint installed and configured (flat config, TypeScript support, 0 errors)
 
 ### v2.1.1 — Performance & Hardening (March 2026)
 
