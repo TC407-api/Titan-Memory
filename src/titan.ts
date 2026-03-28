@@ -60,7 +60,7 @@ import { DriftMonitor } from './cortex/drift-monitor.js';
 import { ProjectHooksManager } from './cortex/project-hooks.js';
 import type { MemoryCategory, CategoryClassification, SufficiencyResult } from './cortex/types.js';
 import { classifyContent } from './cortex/classifier.js';
-import { checkSufficiency, getRelevantCategories } from './cortex/retrieval.js';
+// checkSufficiency and getRelevantCategories moved to ValidationDelegate
 
 // MIRAS Enhancement imports
 import { createEmbeddingGenerator, IEmbeddingGenerator } from './storage/index.js';
@@ -99,6 +99,13 @@ import {
   WorkingMemoryState,
   getWorkingMemory
 } from './layers/working.js';
+
+// Delegate imports
+import { GraphDelegate } from './delegates/graph-delegate.js';
+import { ContextDelegate } from './delegates/context-delegate.js';
+import { LearningDelegate } from './delegates/learning-delegate.js';
+import { ValidationDelegate } from './delegates/validation-delegate.js';
+import { CortexDelegate } from './delegates/cortex-delegate.js';
 
 /**
  * Gating decisions for intelligent routing
@@ -161,6 +168,13 @@ export class TitanMemory {
   // v2.0: Working Memory
   private workingMemory: WorkingMemory;
 
+  // Delegates
+  private graphDelegate!: GraphDelegate;
+  private contextDelegate!: ContextDelegate;
+  private learningDelegate!: LearningDelegate;
+  private validationDelegate!: ValidationDelegate;
+  private cortexDelegate!: CortexDelegate;
+
   constructor(configPath?: string, projectId?: string) {
     loadConfig(configPath);
     ensureDirectories();
@@ -209,6 +223,50 @@ export class TitanMemory {
 
     // Cortex: Initialize if enabled
     this.initializeCortex();
+
+    // Initialize delegates
+    this.initializeDelegates();
+  }
+
+  /**
+   * Initialize delegate instances that extract method groups from this class
+   */
+  private initializeDelegates(): void {
+    const ensureInit = async () => {
+      if (!this.initialized) await this.initialize();
+    };
+
+    this.graphDelegate = new GraphDelegate(
+      this.decisionTracer,
+      this.worldModel,
+      this.causalGraph,
+      ensureInit,
+    );
+
+    this.contextDelegate = new ContextDelegate(
+      () => this.contextCaptureManager,
+      () => this.getCurrentMomentum(),
+    );
+
+    this.learningDelegate = new LearningDelegate(
+      this.continualLearner,
+      () => this.crossProjectLearner,
+      () => this.patternMatcher,
+      () => this.activeProjectId,
+      ensureInit,
+    );
+
+    this.validationDelegate = new ValidationDelegate(
+      this.validator,
+    );
+
+    this.cortexDelegate = new CortexDelegate(
+      () => this.cortexPipeline,
+      () => this.categorySummarizer,
+      () => this.intentGuardrails,
+      () => this.driftMonitor,
+      () => this.projectHooks,
+    );
   }
 
   /**
@@ -1327,8 +1385,7 @@ export class TitanMemory {
     confidence?: number;
     tags?: string[];
   }): Promise<DecisionTrace> {
-    if (!this.initialized) await this.initialize();
-    return this.decisionTracer.createDecision(params);
+    return this.graphDelegate.traceDecision(params);
   }
 
   /**
@@ -1401,7 +1458,7 @@ export class TitanMemory {
    * Get current world state
    */
   getWorldState(): WorldState {
-    return this.worldModel.getWorldState();
+    return this.graphDelegate.getWorldState();
   }
 
   /**
@@ -1442,7 +1499,7 @@ export class TitanMemory {
    * Get quality score for a memory
    */
   getQualityScore(memory: MemoryEntry): QualityScore {
-    return this.validator.calculateQualityScore(memory);
+    return this.validationDelegate.getQualityScore(memory);
   }
 
   /**
@@ -1612,14 +1669,14 @@ export class TitanMemory {
    * Get plasticity index for a pattern
    */
   getPlasticityIndex(patternId: string): number {
-    return this.continualLearner.getPlasticityIndex(patternId);
+    return this.learningDelegate.getPlasticityIndex(patternId);
   }
 
   /**
    * Get stability index for a pattern
    */
   getStabilityIndex(patternId: string): number {
-    return this.continualLearner.getStabilityIndex(patternId);
+    return this.learningDelegate.getStabilityIndex(patternId);
   }
 
   /**
@@ -1650,7 +1707,7 @@ export class TitanMemory {
    * Update domain learning rate based on success/failure feedback
    */
   updateDomainLearningRate(domain: string, success: boolean): void {
-    this.continualLearner.updateDomainLearningRate(domain, success);
+    this.learningDelegate.updateDomainLearningRate(domain, success);
   }
 
   // --- Combined Phase 3 Stats ---
@@ -1771,18 +1828,7 @@ export class TitanMemory {
       domain?: string;
     }
   ): Promise<PatternMatchResult[]> {
-    if (!this.initialized) await this.initialize();
-
-    if (!this.crossProjectLearner || !this.patternMatcher) {
-      return [];
-    }
-
-    const patterns = this.crossProjectLearner.getAllPatterns();
-    return this.patternMatcher.match(query, patterns, {
-      maxResults: options?.limit || 10,
-      minRelevance: options?.minRelevance || 0.6,
-      domains: options?.domain ? [options.domain] : undefined,
-    });
+    return this.learningDelegate.findRelevantPatterns(query, options);
   }
 
   /**
@@ -1790,20 +1836,7 @@ export class TitanMemory {
    * Feature 7: Cross-Project Learning
    */
   async extractTransferablePatterns(): Promise<TransferablePattern[]> {
-    if (!this.initialized) await this.initialize();
-
-    if (!this.crossProjectLearner) {
-      return [];
-    }
-
-    const projectId = this.activeProjectId || 'default';
-    const stablePatterns = await this.continualLearner.getPatternsByStage('stable');
-    const maturePatterns = await this.continualLearner.getPatternsByStage('mature');
-
-    return this.crossProjectLearner.extractPatterns(
-      projectId,
-      [...stablePatterns, ...maturePatterns]
-    );
+    return this.learningDelegate.extractTransferablePatterns();
   }
 
   /**
@@ -1811,12 +1844,7 @@ export class TitanMemory {
    * Feature 7: Cross-Project Learning
    */
   async recordPatternTransfer(patternId: string): Promise<boolean> {
-    if (!this.crossProjectLearner) {
-      return false;
-    }
-
-    const projectId = this.activeProjectId || 'default';
-    return this.crossProjectLearner.recordTransfer(patternId, projectId);
+    return this.learningDelegate.recordPatternTransfer(patternId);
   }
 
   /**
@@ -1827,12 +1855,7 @@ export class TitanMemory {
     trigger: string,
     momentum?: number
   ): Promise<ContextCaptureResult | null> {
-    if (!this.contextCaptureManager) {
-      return null;
-    }
-
-    const currentMomentum = momentum ?? this.getCurrentMomentum();
-    return this.contextCaptureManager.captureContext(trigger, currentMomentum);
+    return this.contextDelegate.captureContext(trigger, momentum);
   }
 
   /**
@@ -1840,9 +1863,7 @@ export class TitanMemory {
    * Feature 4: Auto Context Capture
    */
   updateContextBuffer(content: string): void {
-    if (this.contextCaptureManager) {
-      this.contextCaptureManager.addToBuffer(content);
-    }
+    this.contextDelegate.updateContextBuffer(content);
   }
 
   /**
@@ -1947,49 +1968,35 @@ export class TitanMemory {
    * Classify content into a memory category
    */
   classifyContent(content: string): CategoryClassification {
-    return classifyContent(content);
+    return this.cortexDelegate.classifyContent(content);
   }
 
   /**
    * Get category summary for a specific category
    */
   getCategorySummary(category: MemoryCategory): { category: string; summary: string; entryCount: number; version: number } | null {
-    if (!this.categorySummarizer) return null;
-    const summary = this.categorySummarizer.getSummary(category);
-    if (!summary) return null;
-    return {
-      category: summary.category,
-      summary: summary.summary,
-      entryCount: summary.entryCount,
-      version: summary.version,
-    };
+    return this.cortexDelegate.getCategorySummary(category);
   }
 
   /**
    * Check sufficiency of recall results across categories
    */
   checkCategorySufficiency(memories: MemoryEntry[], query: string): SufficiencyResult {
-    const targetCategories = getRelevantCategories(query);
-    return checkSufficiency(memories, targetCategories);
+    return this.validationDelegate.checkCategorySufficiency(memories, query);
   }
 
   /**
    * Inspect a tool call via intent guardrails
    */
   inspectIntent(toolName: string, args: Record<string, unknown>): { action: string; reason: string; rule?: string } {
-    if (!this.intentGuardrails) {
-      return { action: 'allow', reason: 'Guardrails not enabled' };
-    }
-    return this.intentGuardrails.inspect(toolName, args);
+    return this.cortexDelegate.inspectIntent(toolName, args);
   }
 
   /**
    * Record drift feedback for a categorized memory
    */
   recordDriftFeedback(memoryId: string, category: MemoryCategory, signal: 'helpful' | 'harmful'): void {
-    if (this.driftMonitor) {
-      this.driftMonitor.recordFeedback(memoryId, category, signal);
-    }
+    this.cortexDelegate.recordDriftFeedback(memoryId, category, signal);
   }
 
   /**
@@ -2003,14 +2010,7 @@ export class TitanMemory {
     projectHooksEnabled: boolean;
     categorySummaries: number;
   } {
-    return {
-      enabled: !!this.cortexPipeline,
-      pipelineActive: this.cortexPipeline?.isEnabled() ?? false,
-      guardrailsEnabled: this.intentGuardrails?.isEnabled() ?? false,
-      driftMonitorEnabled: this.driftMonitor?.isEnabled() ?? false,
-      projectHooksEnabled: this.projectHooks?.isEnabled() ?? false,
-      categorySummaries: this.categorySummarizer?.getAllSummaries().length ?? 0,
-    };
+    return this.cortexDelegate.getCortexStatus();
   }
 
   /**
@@ -2142,8 +2142,7 @@ export class TitanMemory {
     strength?: number;
     evidence?: string;
   }): Promise<CausalEdge> {
-    if (!this.initialized) await this.initialize();
-    return this.causalGraph.link(params);
+    return this.graphDelegate.createCausalLink(params);
   }
 
   /**
@@ -2156,8 +2155,7 @@ export class TitanMemory {
     minStrength?: number;
     relationTypes?: CausalRelationType[];
   }): Promise<CausalChain> {
-    if (!this.initialized) await this.initialize();
-    return this.causalGraph.trace(memoryId, options);
+    return this.graphDelegate.traceCausalChain(memoryId, options);
   }
 
   /**
@@ -2165,8 +2163,7 @@ export class TitanMemory {
    * v2.0: Traces causes back to root
    */
   async explainMemory(memoryId: string, maxDepth?: number): Promise<ExplanationTree> {
-    if (!this.initialized) await this.initialize();
-    return this.causalGraph.why(memoryId, maxDepth);
+    return this.graphDelegate.explainMemory(memoryId, maxDepth);
   }
 
   /**
@@ -2177,8 +2174,7 @@ export class TitanMemory {
     outgoing: CausalEdge[];
     incoming: CausalEdge[];
   }> {
-    if (!this.initialized) await this.initialize();
-    return this.causalGraph.getEdgesForMemory(memoryId);
+    return this.graphDelegate.getCausalEdges(memoryId);
   }
 
   /**
@@ -2186,8 +2182,7 @@ export class TitanMemory {
    * v2.0: Useful for conflict detection
    */
   async findContradictions(memoryId: string): Promise<CausalEdge[]> {
-    if (!this.initialized) await this.initialize();
-    return this.causalGraph.findContradictions(memoryId);
+    return this.graphDelegate.findContradictions(memoryId);
   }
 
   /**
@@ -2195,8 +2190,7 @@ export class TitanMemory {
    * v2.0: Shows relationship distribution and graph health
    */
   async getCausalGraphStats(): Promise<CausalGraphStats> {
-    if (!this.initialized) await this.initialize();
-    return this.causalGraph.getStats();
+    return this.graphDelegate.getCausalGraphStats();
   }
 
   /**
@@ -2204,8 +2198,7 @@ export class TitanMemory {
    * v2.0: Unlinks two memories
    */
   async removeCausalLink(edgeId: string): Promise<boolean> {
-    if (!this.initialized) await this.initialize();
-    return this.causalGraph.unlink(edgeId);
+    return this.graphDelegate.removeCausalLink(edgeId);
   }
 
   // ==================== v2.0 Working Memory Methods ====================
