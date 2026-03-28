@@ -5,8 +5,8 @@
 import { ToolHandler, ToolDefinitions } from '../src/mcp/tools';
 
 describe('MCP Tool Definitions', () => {
-  it('should have 30 tools defined', () => {
-    expect(ToolDefinitions).toHaveLength(30);
+  it('should have 33 tools defined', () => {
+    expect(ToolDefinitions).toHaveLength(33);
   });
 
   it('should have correct tool names', () => {

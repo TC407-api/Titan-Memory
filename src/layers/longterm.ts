@@ -244,14 +244,18 @@ export class LongTermMemoryLayer extends BaseMemoryLayer {
           ?? (m.metadata.surpriseScore as number)
           ?? 0.5;
 
+        // Multi-signal scoring: access frequency and surprise weight
+        const accessCount = (m.metadata.accessCount as number) || 0;
+        const accessBoost = 1 + Math.log1p(accessCount); // log(1+n), gentle curve
+        const surpriseWeight = (m.metadata.surpriseScore as number) ?? 0.5;
+
         // Recency tiebreaker: newer memories get up to 20% bonus
-        // Helps knowledge-updates where new info should rank above old contradicting info
         const normalizedRecency = (createdAt.getTime() - minTs) / tsRange;
         const recencyTiebreak = normalizedRecency * 0.20;
 
         return {
           memory: m,
-          effectiveScore: relevanceScore * decay + recencyTiebreak,
+          effectiveScore: relevanceScore * decay * accessBoost * surpriseWeight + recencyTiebreak,
           decay,
         };
       })

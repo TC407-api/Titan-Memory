@@ -14,6 +14,9 @@ export const ToolSchemas = {
     layer: z.number().min(2).max(5).optional().describe('Force specific layer (2=factual, 3=longterm, 4=semantic, 5=episodic)'),
     tags: z.array(z.string()).optional().describe('Tags for categorization'),
     projectId: z.string().optional().describe('Project identifier'),
+    agentId: z.string().optional().describe('v2.2: Agent identifier for namespace isolation'),
+    namespace: z.enum(['private', 'project', 'global']).optional()
+      .describe('v2.2: Memory namespace - private (agent only), project (project-wide), global (all agents, default)'),
   }),
 
   titan_recall: z.object({
@@ -24,6 +27,7 @@ export const ToolSchemas = {
     tags: z.array(z.string()).optional().describe('Filter by tags'),
     mode: z.enum(['full', 'summary', 'metadata']).default('full').optional()
       .describe('FR-2: Response mode - full (default), summary (100 chars + metadata), or metadata only'),
+    agentId: z.string().optional().describe('v2.2: Agent identifier for namespace isolation filtering'),
   }),
 
   titan_get: z.object({
@@ -197,6 +201,31 @@ export const ToolSchemas = {
     runs: z.number().min(1).max(10).default(1).optional()
       .describe('v2.1: Number of runs for statistical averaging (default: 1, max: 10)'),
   }),
+
+  // v2.2: Multi-Agent Namespace - Publish
+  titan_publish: z.object({
+    memoryId: z.string().describe('Memory ID to publish'),
+    visibility: z.enum(['project', 'global']).describe('Target visibility level'),
+  }),
+
+  // v2.2: Multi-Agent Namespace - Subscribe
+  titan_subscribe: z.object({
+    agentId: z.string().optional().describe('Agent ID to filter by'),
+    projectId: z.string().optional().describe('Project ID to filter by'),
+    namespace: z.enum(['private', 'project', 'global']).optional()
+      .describe('Namespace to query'),
+  }),
+
+  // v2.2: Token-Efficient Navigation
+  titan_navigate: z.object({
+    query: z.string().optional().describe('Optional query to filter categories'),
+    category: z.enum(['knowledge', 'profile', 'event', 'behavior', 'skill']).optional()
+      .describe('Filter to a specific category'),
+    depth: z.number().min(1).max(2).default(1).optional()
+      .describe('Depth 1: category summaries (~500 tokens). Depth 2: full memories for category'),
+    tokenBudget: z.number().default(2048).optional()
+      .describe('Maximum tokens to return (default: 2048)'),
+  }),
 };
 
 // JSON Schema versions for MCP tool registration
@@ -211,6 +240,8 @@ export const ToolDefinitions = [
         layer: { type: 'number', description: 'Force specific layer (2=factual, 3=longterm, 4=semantic, 5=episodic)' },
         tags: { type: 'array', items: { type: 'string' }, description: 'Tags for categorization' },
         projectId: { type: 'string', description: 'Project identifier' },
+        agentId: { type: 'string', description: 'v2.2: Agent identifier for namespace isolation' },
+        namespace: { type: 'string', enum: ['private', 'project', 'global'], description: 'v2.2: Memory namespace (default: global)' },
       },
       required: ['content'],
     },
@@ -231,6 +262,7 @@ export const ToolDefinitions = [
           enum: ['full', 'summary', 'metadata'],
           description: 'FR-2: Response mode - full (default), summary (100 chars + metadata), or metadata only for context efficiency',
         },
+        agentId: { type: 'string', description: 'v2.2: Agent identifier for namespace isolation filtering' },
       },
       required: ['query'],
     },
@@ -591,6 +623,48 @@ export const ToolDefinitions = [
         llmMode: { type: 'boolean', description: 'v2.1: Enable LLM Turbo Layer for this run (default: false)' },
         rawMode: { type: 'boolean', description: 'v2.1: Disable safety overhead for clean measurement (default: false)' },
         runs: { type: 'number', description: 'v2.1: Number of runs for statistical averaging (default: 1, max: 10)' },
+      },
+      required: [],
+    },
+  },
+  // v2.2: Multi-Agent Namespace - Publish
+  {
+    name: 'titan_publish',
+    description: 'v2.2: Promote a private memory to project or global visibility. Updates the namespace metadata.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        memoryId: { type: 'string', description: 'Memory ID to publish' },
+        visibility: { type: 'string', enum: ['project', 'global'], description: 'Target visibility level' },
+      },
+      required: ['memoryId', 'visibility'],
+    },
+  },
+  // v2.2: Multi-Agent Namespace - Subscribe
+  {
+    name: 'titan_subscribe',
+    description: 'v2.2: Query memories shared by other agents, filtered by namespace. Returns memories visible to the requesting agent.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        agentId: { type: 'string', description: 'Agent ID to filter by' },
+        projectId: { type: 'string', description: 'Project ID to filter by' },
+        namespace: { type: 'string', enum: ['private', 'project', 'global'], description: 'Namespace to query' },
+      },
+      required: [],
+    },
+  },
+  // v2.2: Token-Efficient Navigation
+  {
+    name: 'titan_navigate',
+    description: 'v2.2: Browse memory categories with token-efficient summaries. Depth 1 returns category names + counts (~500 tokens). Depth 2 returns full memories capped at tokenBudget.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        query: { type: 'string', description: 'Optional query to filter categories' },
+        category: { type: 'string', enum: ['knowledge', 'profile', 'event', 'behavior', 'skill'], description: 'Filter to a specific category' },
+        depth: { type: 'number', description: 'Depth 1: summaries (~500 tokens). Depth 2: full memories (default: 1)' },
+        tokenBudget: { type: 'number', description: 'Maximum tokens to return (default: 2048)' },
       },
       required: [],
     },

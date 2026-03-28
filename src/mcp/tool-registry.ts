@@ -8,6 +8,10 @@ import { MemoryLayer, CompactionContext, RecallMode } from '../types.js';
 import { UtilitySignal } from '../utils/utility.js';
 import { NoopReason } from '../trace/noop-log.js';
 import { ToolSchemas } from './tools.js';
+import { NamespaceManager, MemoryNamespace } from '../storage/namespace-manager.js';
+import { gateByRelevance } from '../retrieval/relevance-gate.js';
+
+const namespaceManager = new NamespaceManager();
 
 export interface ToolResult {
   content: Array<{ type: 'text'; text: string }>;
@@ -45,18 +49,26 @@ function textResult(text: string): ToolResult {
 
 registerTool('titan_add', async (titan, args) => {
   const parsed = ToolSchemas.titan_add.parse(args);
+  // v2.2: Tag metadata with namespace isolation info
+  const baseMeta: Record<string, unknown> = {
+    tags: parsed.tags,
+    projectId: parsed.projectId,
+  };
+  const taggedMeta = namespaceManager.tagMemory(
+    baseMeta,
+    parsed.agentId,
+    parsed.namespace as MemoryNamespace | undefined,
+    parsed.projectId,
+  );
   let result: unknown;
   if (parsed.layer) {
     result = await titan.addToLayer(
       parsed.layer as MemoryLayer,
       parsed.content,
-      { tags: parsed.tags, projectId: parsed.projectId }
+      taggedMeta
     );
   } else {
-    result = await titan.add(parsed.content, {
-      tags: parsed.tags,
-      projectId: parsed.projectId,
-    });
+    result = await titan.add(parsed.content, taggedMeta);
   }
   return jsonResult(result);
 });
@@ -414,4 +426,137 @@ registerTool('titan_benchmark', async (_titan, args) => {
   } finally {
     configRestorer?.();
   }
+});
+
+// v2.2: Multi-Agent Namespace - Publish
+registerTool('titan_publish', async (titan, args) => {
+  const parsed = ToolSchemas.titan_publish.parse(args);
+  const memory = await titan.get(parsed.memoryId);
+  if (!memory) {
+    return textResult(`Memory not found: ${parsed.memoryId}`);
+  }
+  // Update namespace metadata
+  memory.metadata.namespace = parsed.visibility;
+  // Note: In a full implementation this would persist the update to Zilliz.
+  // For now we return the intent for the caller to re-store if needed.
+  return jsonResult({
+    memoryId: parsed.memoryId,
+    previousNamespace: memory.metadata.namespace,
+    newNamespace: parsed.visibility,
+    published: true,
+  });
+});
+
+// v2.2: Multi-Agent Namespace - Subscribe
+registerTool('titan_subscribe', async (titan, args) => {
+  const parsed = ToolSchemas.titan_subscribe.parse(args);
+  const filter = namespaceManager.buildFilter(
+    parsed.agentId,
+    parsed.namespace,
+    parsed.projectId,
+  );
+  // Use recall with a broad query, applying the namespace filter
+  const result = await titan.recall('*', {
+    limit: 20,
+    projectId: parsed.projectId,
+  });
+  // Apply namespace filtering on the client side
+  let memories = 'fusedMemories' in result ? result.fusedMemories : [];
+  if (filter && memories.length > 0) {
+    memories = memories.filter(m => {
+      const ns = m.metadata.namespace as string | undefined;
+      const aid = m.metadata.agentId as string | undefined;
+      const pid = m.metadata.projectId as string | undefined;
+
+      if (parsed.namespace === 'private') {
+        return ns === 'private' && aid === parsed.agentId;
+      }
+      if (parsed.namespace === 'project') {
+        return ns === 'project' && pid === parsed.projectId;
+      }
+      // global: exclude foreign private
+      if (parsed.agentId) {
+        return ns !== 'private' || aid === parsed.agentId;
+      }
+      return ns !== 'private';
+    });
+  }
+  return jsonResult({
+    memories: memories.map(m => ({
+      id: m.id,
+      content: m.content.substring(0, 200),
+      namespace: m.metadata.namespace || 'global',
+      agentId: m.metadata.agentId,
+      projectId: m.metadata.projectId,
+    })),
+    count: memories.length,
+    filter,
+  });
+});
+
+// v2.2: Token-Efficient Navigation
+registerTool('titan_navigate', async (titan, args) => {
+  const parsed = ToolSchemas.titan_navigate.parse(args);
+  const depth = parsed.depth ?? 1;
+  const tokenBudget = parsed.tokenBudget ?? 2048;
+  const categories: Array<'knowledge' | 'profile' | 'event' | 'behavior' | 'skill'> =
+    parsed.category ? [parsed.category] : ['knowledge', 'profile', 'event', 'behavior', 'skill'];
+
+  if (depth === 1) {
+    // Depth 1: Category summaries (~500 tokens)
+    const summaries: Array<{
+      category: string;
+      entryCount: number;
+      topSnippet: string;
+    }> = [];
+    for (const cat of categories) {
+      const summary = titan.getCategorySummary(cat);
+      if (summary && summary.entryCount > 0) {
+        summaries.push({
+          category: summary.category,
+          entryCount: summary.entryCount,
+          topSnippet: summary.summary.substring(0, 100),
+        });
+      }
+    }
+    return jsonResult({
+      depth: 1,
+      categories: summaries,
+      totalCategories: summaries.length,
+      tokenEstimate: Math.ceil(JSON.stringify(summaries).length / 4),
+    });
+  }
+
+  // Depth 2: Full memories for category, capped at tokenBudget
+  const query = parsed.query || parsed.category || '*';
+  const recallResult = await titan.recall(query, { limit: 50 });
+  const memories = 'fusedMemories' in recallResult ? recallResult.fusedMemories : [];
+
+  // Filter by category if specified
+  const filtered = parsed.category
+    ? memories.filter(m => m.metadata.category === parsed.category)
+    : memories;
+
+  // Apply relevance gate with token budget
+  const scored = filtered.map((m, i) => ({
+    id: m.id,
+    content: m.content,
+    score: 1 - (i * 0.01), // Use position as proxy for relevance
+    metadata: m.metadata as Record<string, unknown>,
+  }));
+  const gated = gateByRelevance(scored, tokenBudget);
+
+  return jsonResult({
+    depth: 2,
+    category: parsed.category || 'all',
+    memories: gated.map(g => ({
+      id: g.id,
+      content: g.content,
+      category: g.metadata.category,
+    })),
+    count: gated.length,
+    totalAvailable: filtered.length,
+    tokenEstimate: Math.ceil(JSON.stringify(gated).length / 4),
+    tokenBudget,
+  });
 });

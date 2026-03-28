@@ -107,10 +107,10 @@ describe('ToolHandler — extended coverage', () => {
         projectId: 'proj-x',
       });
 
-      expect(mockTitan.addToLayer).toHaveBeenCalledWith(3, 'layered memory', {
+      expect(mockTitan.addToLayer).toHaveBeenCalledWith(3, 'layered memory', expect.objectContaining({
         tags: ['arch'],
         projectId: 'proj-x',
-      });
+      }));
       expect(parseText(result)).toEqual(entry);
     });
 
@@ -122,10 +122,10 @@ describe('ToolHandler — extended coverage', () => {
         content: 'auto-routed memory',
       });
 
-      expect(mockTitan.add).toHaveBeenCalledWith('auto-routed memory', {
+      expect(mockTitan.add).toHaveBeenCalledWith('auto-routed memory', expect.objectContaining({
         tags: undefined,
         projectId: undefined,
-      });
+      }));
       expect(parseText(result)).toEqual(entry);
     });
   });
