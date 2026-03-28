@@ -18,6 +18,7 @@ import {
   type AuthConfig,
 } from '../utils/auth.js';
 import { applySecurityHeaders, type SecurityConfig } from './middleware/security.js';
+import { checkRateLimit } from './middleware/rate-limit.js';
 
 export interface DashboardConfig {
   port: number;
@@ -122,6 +123,9 @@ export class DashboardServer {
    * Handle incoming HTTP requests
    */
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    // Rate limit check — reject early if over threshold
+    if (!checkRateLimit(req, res)) return;
+
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
     const pathname = url.pathname;
     const origin = req.headers.origin;
@@ -268,6 +272,13 @@ export class DashboardServer {
    */
   private parseBody(req: http.IncomingMessage): Promise<unknown> {
     const MAX_BODY_SIZE = 1024 * 1024; // 1MB
+
+    // Reject early if Content-Length exceeds limit (before reading any data)
+    const contentLength = parseInt(req.headers['content-length'] || '0', 10);
+    if (contentLength > MAX_BODY_SIZE) {
+      return Promise.reject(new Error('Request body too large (max 1MB)'));
+    }
+
     return new Promise((resolve, reject) => {
       let data = '';
       let size = 0;

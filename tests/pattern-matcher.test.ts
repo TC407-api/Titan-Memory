@@ -317,19 +317,18 @@ describe('PatternMatcher', () => {
     it('should cache embeddings and not call generator twice for same text', async () => {
       const generator = makeMockEmbeddingGenerator();
       const matcher = new PatternMatcher(generator);
-      const pattern = makePattern({ content: 'cached content text' });
+      // Use distinct strings for query and pattern content so the query is a unique cache key
+      const pattern = makePattern({ content: 'pattern content about dependency injection' });
 
       // Two calls with the same query — embedding for query should only be generated once
-      await matcher.match('cached content text', [pattern], { minRelevance: 0 });
-      await matcher.match('cached content text', [pattern], { minRelevance: 0 });
+      await matcher.match('the same query string', [pattern], { minRelevance: 0 });
+      await matcher.match('the same query string', [pattern], { minRelevance: 0 });
 
-      // The query text is the same in both calls; generator should reuse cache on second call
-      const callArgs = (generator.generateEmbedding as jest.Mock).mock.calls.map(
-        (c: string[]) => c[0]
-      );
-      const uniqueCalls = new Set(callArgs);
-      // "cached content text" appears as both query and content — should only appear once per unique string
-      expect(uniqueCalls.size).toBeLessThan(callArgs.length);
+      // After 2 calls: query cached after first call, pattern content cached after first call.
+      // Second call reuses both from cache → total calls = 2 (query + pattern on first call only).
+      // Without caching it would be 4 calls. With caching it must be fewer than 4.
+      const totalCalls = (generator.generateEmbedding as jest.Mock).mock.calls.length;
+      expect(totalCalls).toBeLessThan(4);
     });
   });
 

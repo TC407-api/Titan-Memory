@@ -169,7 +169,10 @@ export class CrossProjectLearningManager {
    */
   private findExistingPattern(pattern: TransferablePattern): string | undefined {
     for (const [key, existing] of this.patterns) {
-      if (contentSimilarity(pattern.content, existing.content) > 0.9) {
+      if (
+        existing.domain === pattern.domain &&
+        contentSimilarity(pattern.content, existing.content) > 0.9
+      ) {
         return key;
       }
     }

@@ -167,10 +167,13 @@ export class LongTermMemoryLayer extends BaseMemoryLayer {
                         this.vectorStorage.isHybridSearchEnabled?.() &&
                         this.vectorStorage.hybridSearch;
 
+      // Overfetch only when reranker will trim results; otherwise fetch exact limit
+      const fetchLimit = this.reranker ? Math.min(limit * 2, 50) : limit;
+
       let results;
       if (useHybrid && this.vectorStorage.hybridSearch) {
         // Hybrid search: combines dense semantic + BM25 keyword search
-        results = await this.vectorStorage.hybridSearch(queryText, limit * 2, {
+        results = await this.vectorStorage.hybridSearch(queryText, fetchLimit, {
           rerankStrategy: hybridConfig.rerankStrategy || 'rrf',
           rrfK: hybridConfig.rrfK || 60,
           denseWeight: hybridConfig.denseWeight || 0.5,
@@ -178,7 +181,7 @@ export class LongTermMemoryLayer extends BaseMemoryLayer {
         });
       } else {
         // Regular dense vector search
-        results = await this.vectorStorage.search(queryText, limit * 2);
+        results = await this.vectorStorage.search(queryText, fetchLimit);
       }
 
       // Rerank using Voyage AI for accuracy beyond raw vector similarity

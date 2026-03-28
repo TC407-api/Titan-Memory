@@ -28,7 +28,7 @@ const DEFAULT_CONFIG: Required<LocalEmbeddingConfig> = {
 export class LocalEmbeddingGenerator implements IEmbeddingGenerator {
   private readonly config: Required<LocalEmbeddingConfig>;
 
-  constructor(config?: LocalEmbeddingConfig) {
+  constructor(config?: Partial<LocalEmbeddingConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
   }
 

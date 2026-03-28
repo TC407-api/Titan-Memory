@@ -43,13 +43,10 @@ const DEFAULT_CONFIG: SecurityConfig = {
 function buildCsp(config: SecurityConfig, host: string): string {
   const isLocalhost = host.includes('localhost') || host.includes('127.0.0.1');
 
-  // Base sources
+  // Base sources — unsafe-inline removed for scripts; CDN scripts load via src
   const scriptSources = [
     "'self'",
-    // CDN for Chart.js and vis-network
     'https://cdn.jsdelivr.net',
-    // Allow inline scripts (needed for some charts) - consider removing in production
-    "'unsafe-inline'",
     ...(config.additionalScriptSources || []),
   ];
 

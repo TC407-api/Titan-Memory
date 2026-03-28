@@ -5,6 +5,7 @@
 
 import { WebSocketServer, WebSocket } from 'ws';
 import http from 'http';
+import { validateDashboardToken, shouldBypassAuth } from '../utils/auth.js';
 
 export interface DashboardEvent {
   event: string;
@@ -34,7 +35,19 @@ export class DashboardWebSocket {
   /**
    * Handle new WebSocket connection
    */
-  private handleConnection(ws: WebSocket, _req: http.IncomingMessage): void {
+  private handleConnection(ws: WebSocket, req: http.IncomingMessage): void {
+    // Auth check: allow localhost bypass, otherwise require valid token
+    const remoteAddress = req.socket.remoteAddress;
+    if (!shouldBypassAuth(remoteAddress)) {
+      const url = new URL(req.url || '', 'http://localhost');
+      const token = url.searchParams.get('token') ||
+        req.headers.authorization?.replace('Bearer ', '');
+      if (!validateDashboardToken(token ?? undefined)) {
+        ws.close(1008, 'Unauthorized');
+        return;
+      }
+    }
+
     const clientId = Date.now().toString(36);
     console.log(`Dashboard WebSocket client connected: ${clientId}`);
 
