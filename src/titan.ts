@@ -107,6 +107,10 @@ import { LearningDelegate } from './delegates/learning-delegate.js';
 import { ValidationDelegate } from './delegates/validation-delegate.js';
 import { CortexDelegate } from './delegates/cortex-delegate.js';
 
+// v2.2: CEO Board features
+import { BackgroundScheduler } from './adaptive/background-scheduler.js';
+import { NamespaceManager } from './storage/namespace-manager.js';
+
 /**
  * Gating decisions for intelligent routing
  */
@@ -175,6 +179,10 @@ export class TitanMemory {
   private validationDelegate!: ValidationDelegate;
   private cortexDelegate!: CortexDelegate;
 
+  // v2.2: CEO Board features
+  private backgroundScheduler?: BackgroundScheduler;
+  private namespaceManager: NamespaceManager;
+
   constructor(configPath?: string, projectId?: string) {
     loadConfig(configPath);
     ensureDirectories();
@@ -197,6 +205,9 @@ export class TitanMemory {
       [MemoryLayer.SEMANTIC, this.semanticLayer as BaseMemoryLayer],
       [MemoryLayer.EPISODIC, this.episodicLayer as BaseMemoryLayer],
     ]);
+
+    // v2.2: Namespace manager for agent isolation
+    this.namespaceManager = new NamespaceManager();
 
     // Phase 3: Initialize cognitive systems
     this.knowledgeGraph = new KnowledgeGraph();
@@ -431,6 +442,16 @@ export class TitanMemory {
     this.initialized = false;
   }
 
+  /** v2.2: Get namespace manager for agent isolation */
+  getNamespaceManager(): NamespaceManager {
+    return this.namespaceManager;
+  }
+
+  /** v2.2: Get background scheduler status */
+  getSchedulerStatus(): { running: boolean } {
+    return { running: this.backgroundScheduler?.isRunning() ?? false };
+  }
+
   /**
    * List all available projects
    */
@@ -469,6 +490,16 @@ export class TitanMemory {
     }
 
     await Promise.all(initPromises);
+
+    // v2.2: Start background scheduler for automated consolidation + pruning
+    this.backgroundScheduler = new BackgroundScheduler({
+      consolidate: () => this.consolidate(),
+      prune: () => this.prune(),
+    });
+    this.backgroundScheduler.start({
+      consolidateIntervalMs: 6 * 60 * 60 * 1000, // 6 hours
+      pruneIntervalMs: 24 * 60 * 60 * 1000,       // 24 hours
+    });
 
     this.initialized = true;
   }
@@ -1326,6 +1357,11 @@ export class TitanMemory {
     }
     if (this.workingMemory) {
       closePromises.push(this.workingMemory.close());
+    }
+
+    // v2.2: Stop background scheduler
+    if (this.backgroundScheduler?.isRunning()) {
+      await this.backgroundScheduler.stop();
     }
 
     await Promise.all(closePromises);
