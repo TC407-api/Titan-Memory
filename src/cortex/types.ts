@@ -220,6 +220,18 @@ export interface DriftEntry {
   originalCategory: MemoryCategory;
   feedbackSignal: 'helpful' | 'harmful';
   isCorrect: boolean;
+  embedding?: number[];
+}
+
+/**
+ * Embedding drift metrics
+ */
+export interface EmbeddingDriftMetrics {
+  centroidDistance: number;
+  recentCentroid: number[] | null;
+  historicalCentroid: number[] | null;
+  sampleCount: number;
+  driftDetected: boolean;
 }
 
 /**
@@ -233,4 +245,5 @@ export interface DriftStats {
   recentTrend: 'improving' | 'stable' | 'degrading';
   alertThreshold: number;
   belowThreshold: boolean;
+  embeddingDrift?: EmbeddingDriftMetrics;
 }

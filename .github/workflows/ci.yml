@@ -29,7 +29,7 @@ jobs:
         run: npm run build
 
       - name: Security audit
-        run: npm audit --audit-level=high --omit=dev || true  # known upstream vuln
+        run: npm audit --audit-level=high --omit=dev
 
       - name: Tests
         run: npm test

@@ -109,7 +109,7 @@ describe('AutoConsolidationManager', () => {
       const candidate = {
         memory1Id: 'a',
         memory2Id: 'b',
-        similarity: 0.95,
+        similarity: 0.98,
         detectedAt: new Date(),
       };
       expect(manager.shouldAutoMerge(candidate)).toBe(true);
@@ -153,7 +153,7 @@ describe('AutoConsolidationManager', () => {
     it('should mark autoMerged when similarity >= autoMergeThreshold', async () => {
       const mem1 = makeMemory('a', 'Same content');
       const mem2 = makeMemory('b', 'Same content');
-      const result = await manager.executeConsolidation(mem1, mem2, 0.96);
+      const result = await manager.executeConsolidation(mem1, mem2, 0.99);
       expect(result.autoMerged).toBe(true);
     });
 

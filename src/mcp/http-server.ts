@@ -14,7 +14,7 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { ToolDefinitions, ToolHandler } from './tools.js';
-import { Auth0Verifier, VerifiedToken } from './auth/auth0-verifier.js';
+import { Auth0Verifier } from './auth/auth0-verifier.js';
 import { createAuthMiddleware, AuthenticatedRequest } from './auth/middleware.js';
 import { createDiscoveryRouter } from './discovery.js';
 import { hasRequiredScopes } from './auth/scopes.js';
@@ -108,8 +108,8 @@ export function createHttpApp(config: HttpServerConfig = {}): Express {
 
   const app = express();
 
-  // Parse JSON bodies
-  app.use(express.json());
+  // Parse JSON bodies (1MB limit to prevent OOM from oversized payloads)
+  app.use(express.json({ limit: '1mb' }));
 
   // Health check endpoint (no auth required)
   app.get('/health', (_req: Request, res: Response) => {
@@ -150,7 +150,7 @@ export function createHttpApp(config: HttpServerConfig = {}): Express {
       authMiddleware = (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
         const remoteAddress = req.ip || req.socket.remoteAddress;
         if (isLocalhost(remoteAddress)) {
-          req.auth = { token: null as unknown as VerifiedToken, bypassed: true };
+          req.auth = { bypassed: true };
           next();
         } else {
           res.status(401).json({

@@ -8,7 +8,7 @@
       "name": "titan-memory",
       "version": "2.1.0",
       "source": "./plugin",
-      "description": "5-layer cognitive memory with 30 MCP tools, 90.7% benchmark accuracy"
+      "description": "5-layer cognitive memory with 33 MCP tools, hybrid BM25+vector search"
     }
   ]
 }

@@ -1,0 +1,305 @@
+{
+  "suiteName": "Titan Memory v2.1 (Production)",
+  "totalTests": 18,
+  "passed": 16,
+  "failed": 2,
+  "overallScore": 75.1027870836065,
+  "results": [
+    {
+      "passed": true,
+      "score": 71.2,
+      "metrics": {
+        "testCases": 5,
+        "recallAt5": 1,
+        "precisionAt5": 0.2,
+        "mrr": 0.8400000000000001
+      },
+      "details": "Factual lookup: Recall@5=100.0%, Precision@5=20.0%, MRR=0.840",
+      "name": "factual-lookup-accuracy",
+      "category": "accuracy",
+      "timestamp": "2026-04-02T10:52:05.846Z",
+      "durationMs": 6165
+    },
+    {
+      "passed": true,
+      "score": 100,
+      "metrics": {
+        "testCases": 3,
+        "avgRecallAt5": 1,
+        "relevantRetrieved": 6,
+        "totalExpected": 6,
+        "overallAccuracy": 1
+      },
+      "details": "Semantic similarity: 100.0% of relevant memories retrieved",
+      "name": "semantic-similarity-accuracy",
+      "category": "accuracy",
+      "timestamp": "2026-04-02T10:52:09.833Z",
+      "durationMs": 3987
+    },
+    {
+      "passed": true,
+      "score": 89.99999999999999,
+      "metrics": {
+        "testCases": 3,
+        "intentAccuracy": 0.6666666666666666,
+        "retrievalAccuracy": 1,
+        "correctIntents": 2,
+        "correctRetrievals": 3
+      },
+      "details": "Intent-based retrieval: Intent accuracy=66.7%, Retrieval accuracy=100.0%",
+      "name": "intent-based-retrieval-accuracy",
+      "category": "accuracy",
+      "timestamp": "2026-04-02T10:52:13.912Z",
+      "durationMs": 4079
+    },
+    {
+      "passed": true,
+      "score": 100,
+      "metrics": {
+        "layerCoverage": 1,
+        "recallAt5": 1,
+        "layersHit": 4,
+        "totalLayers": 4
+      },
+      "details": "Cross-layer retrieval: 100.0% layer coverage, 100.0% recall@5",
+      "name": "cross-layer-retrieval-accuracy",
+      "category": "accuracy",
+      "timestamp": "2026-04-02T10:52:16.386Z",
+      "durationMs": 2474
+    },
+    {
+      "passed": false,
+      "score": 41.66666666666667,
+      "metrics": {
+        "testCases": 3,
+        "avgTemporalRecall": 0.4166666666666667,
+        "memoriesStored": 10
+      },
+      "details": "LoCoMo temporal reasoning: 41.7% recall on temporal queries",
+      "name": "locomo-temporal-reasoning",
+      "category": "accuracy",
+      "timestamp": "2026-04-02T10:52:21.404Z",
+      "durationMs": 5017
+    },
+    {
+      "passed": true,
+      "score": 66.66666666666666,
+      "metrics": {
+        "testCases": 4,
+        "avgCrossSessionRecall": 0.6666666666666666,
+        "sessionsUsed": 3,
+        "totalMemories": 9
+      },
+      "details": "LoCoMo multi-session: 66.7% cross-session recall",
+      "name": "locomo-multi-session-memory",
+      "category": "accuracy",
+      "timestamp": "2026-04-02T10:52:27.897Z",
+      "durationMs": 6493
+    },
+    {
+      "passed": true,
+      "score": 79.16666666666666,
+      "metrics": {
+        "testCases": 4,
+        "avgEntityRecall": 0.7916666666666666,
+        "entitiesTracked": 6,
+        "memoriesStored": 8
+      },
+      "details": "LoCoMo entity tracking: 79.2% entity-based recall",
+      "name": "locomo-entity-tracking",
+      "category": "accuracy",
+      "timestamp": "2026-04-02T10:52:32.985Z",
+      "durationMs": 5088
+    },
+    {
+      "passed": true,
+      "score": 60,
+      "metrics": {
+        "testCases": 10,
+        "strictAccuracyTop1": 0.3,
+        "lenientAccuracyTop3": 0.9,
+        "strictHits": 3,
+        "lenientHits": 9
+      },
+      "details": "LongMemEval info extraction: strict@1=30.0%, lenient@3=90.0%",
+      "name": "longmemeval-information-extraction",
+      "category": "accuracy",
+      "timestamp": "2026-04-02T10:52:42.798Z",
+      "durationMs": 9813
+    },
+    {
+      "passed": true,
+      "score": 75,
+      "metrics": {
+        "testCases": 4,
+        "avgQaRecall": 0.75,
+        "narrativeLength": 8
+      },
+      "details": "LongMemEval single-session QA: 75.0% recall on narrative queries",
+      "name": "longmemeval-single-session-qa",
+      "category": "accuracy",
+      "timestamp": "2026-04-02T10:52:48.207Z",
+      "durationMs": 5409
+    },
+    {
+      "passed": true,
+      "score": 69.44444444444443,
+      "metrics": {
+        "testCases": 3,
+        "avgMultiSessionRecall": 0.6944444444444443,
+        "sessionsUsed": 3,
+        "totalMemories": 9
+      },
+      "details": "LongMemEval multi-session QA: 69.4% cross-session recall",
+      "name": "longmemeval-multi-session-qa",
+      "category": "accuracy",
+      "timestamp": "2026-04-02T10:52:53.285Z",
+      "durationMs": 5078
+    },
+    {
+      "passed": false,
+      "score": 48,
+      "metrics": {
+        "testCases": 5,
+        "recencyAccuracy": 0.4,
+        "updateRetrievalRate": 0.6,
+        "recencyCorrect": 2,
+        "updateFound": 3
+      },
+      "details": "LongMemEval knowledge updates: 40.0% recency ranking, 60.0% update retrieval",
+      "name": "longmemeval-knowledge-updates",
+      "category": "accuracy",
+      "timestamp": "2026-04-02T10:52:59.595Z",
+      "durationMs": 6310
+    },
+    {
+      "passed": true,
+      "score": 38.43531386799269,
+      "metrics": {
+        "memoriesTested": 5,
+        "avgCompressionRatio": 7.687062773598538,
+        "minRatio": 3.0144927536231885,
+        "maxRatio": 14.1875
+      },
+      "details": "Compression ratio: avg=7.7x, min=3.0x, max=14.2x",
+      "name": "compression-ratio-benchmark",
+      "category": "token-efficiency",
+      "timestamp": "2026-04-02T10:52:59.606Z",
+      "durationMs": 11
+    },
+    {
+      "passed": true,
+      "score": 48.52704669253971,
+      "metrics": {
+        "memoriesTested": 5,
+        "avgFidelityScore": 0.6433333333333333,
+        "avgRoundtripSimilarity": 0.32720760051746084,
+        "minFidelity": 0.4,
+        "maxFidelity": 0.8666666666666667
+      },
+      "details": "Compression fidelity: avg=64.3%, round-trip similarity=32.7%",
+      "name": "compression-fidelity-benchmark",
+      "category": "token-efficiency",
+      "timestamp": "2026-04-02T10:52:59.610Z",
+      "durationMs": 4
+    },
+    {
+      "passed": true,
+      "score": 93.94366250000003,
+      "metrics": {
+        "iterations": 20,
+        "minMs": 200.13700000000244,
+        "maxMs": 435.04989999999816,
+        "meanMs": 224.06599999999997,
+        "p50Ms": 209.6661000000022,
+        "p95Ms": 242.2534999999989,
+        "p99Ms": 435.04989999999816,
+        "targetP95Ms": 2000
+      },
+      "details": "Add operation p95: 242.25ms (target: 2000ms)",
+      "name": "add-operation-latency",
+      "category": "latency",
+      "timestamp": "2026-04-02T10:53:04.092Z",
+      "durationMs": 4482
+    },
+    {
+      "passed": true,
+      "score": 71.27919999999965,
+      "metrics": {
+        "iterations": 20,
+        "minMs": 176.3935000000056,
+        "maxMs": 1185.2112999999954,
+        "meanMs": 387.06603499999983,
+        "p50Ms": 237.90479999998934,
+        "p95Ms": 861.6240000000107,
+        "p99Ms": 1185.2112999999954,
+        "targetP95Ms": 1500
+      },
+      "details": "Recall operation p95: 861.62ms (target: 1500ms)",
+      "name": "recall-operation-latency",
+      "category": "latency",
+      "timestamp": "2026-04-02T10:53:24.947Z",
+      "durationMs": 20855
+    },
+    {
+      "passed": true,
+      "score": 99.55749999993714,
+      "metrics": {
+        "iterations": 20,
+        "minMs": 0.00819999999657739,
+        "maxMs": 0.10480000000097789,
+        "meanMs": 0.02361500000115484,
+        "p50Ms": 0.012700000006589107,
+        "p95Ms": 0.08850000001257285,
+        "p99Ms": 0.10480000000097789,
+        "targetP95Ms": 10
+      },
+      "details": "Classify operation p95: 0.09ms (target: 10ms)",
+      "name": "classify-operation-latency",
+      "category": "latency",
+      "timestamp": "2026-04-02T10:53:24.948Z",
+      "durationMs": 1
+    },
+    {
+      "passed": true,
+      "score": 99.54599999997299,
+      "metrics": {
+        "iterations": 20,
+        "minMs": 0.010300000009010546,
+        "maxMs": 0.07850000000325963,
+        "meanMs": 0.017205000000831205,
+        "p50Ms": 0.011299999998300336,
+        "p95Ms": 0.045400000002700835,
+        "p99Ms": 0.07850000000325963,
+        "targetP95Ms": 5
+      },
+      "details": "Intent detection p95: 0.05ms (target: 5ms)",
+      "name": "intent-detection-latency",
+      "category": "latency",
+      "timestamp": "2026-04-02T10:53:24.948Z",
+      "durationMs": 0
+    },
+    {
+      "passed": true,
+      "score": 99.41700000003038,
+      "metrics": {
+        "iterations": 20,
+        "minMs": 0.00789999999688007,
+        "maxMs": 0.8347999999969034,
+        "meanMs": 0.07114500000170665,
+        "p50Ms": 0.021399999997811392,
+        "p95Ms": 0.11659999999392312,
+        "p99Ms": 0.8347999999969034,
+        "targetP95Ms": 10
+      },
+      "details": "Focus operations p95: 0.12ms (target: 10ms)",
+      "name": "focus-operations-latency",
+      "category": "latency",
+      "timestamp": "2026-04-02T10:53:24.950Z",
+      "durationMs": 2
+    }
+  ],
+  "startTime": "2026-04-02T10:51:59.680Z",
+  "endTime": "2026-04-02T10:53:24.950Z",
+  "totalDurationMs": 85270
+}

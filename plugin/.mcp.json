@@ -3,7 +3,12 @@
     "titan-memory": {
       "command": "node",
       "args": ["${CLAUDE_PLUGIN_ROOT}/bin/titan-mcp.js"],
-      "env": {}
+      "env": {
+        "ZILLIZ_URI": "${ZILLIZ_URI}",
+        "ZILLIZ_TOKEN": "${ZILLIZ_TOKEN}",
+        "VOYAGE_API_KEY": "${VOYAGE_API_KEY}",
+        "GROQ_API_KEY": "${GROQ_API_KEY}"
+      }
     }
   }
 }

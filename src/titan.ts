@@ -813,6 +813,50 @@ export class TitanMemory {
     weightedResults.sort((a, b) => b.weightedScore - a.weightedScore);
     fusedMemories = weightedResults.map(w => w.memory).slice(0, limit);
 
+    // Detect intent for post-retrieval ordering adjustments
+    const queryIntent = this.intentDetector.detect(query);
+
+    // Timeline queries: sort by timestamp to preserve temporal ordering
+    if (queryIntent.type === 'timeline_query') {
+      fusedMemories.sort((a, b) => {
+        const timeA = a.timestamp instanceof Date ? a.timestamp.getTime() : new Date(a.timestamp).getTime();
+        const timeB = b.timestamp instanceof Date ? b.timestamp.getTime() : new Date(b.timestamp).getTime();
+        return timeA - timeB; // Chronological order (oldest first)
+      });
+    }
+
+    // Recency-blended reranking: blend a small recency signal into retrieval scores.
+    // When old and new content about the same topic both match a query, recency
+    // is the only signal that can prefer the updated version without LLM understanding.
+    // Uses 90% retrieval score + 10% recency score so recent memories win near-ties.
+    if (queryIntent.type !== 'timeline_query' && fusedMemories.length > 1) {
+      const scoreMap = new Map<string, number>();
+      for (const wr of weightedResults) {
+        scoreMap.set(wr.memory.id, wr.weightedScore);
+      }
+
+      // Compute recency scores: 0.0 (oldest in result set) to 1.0 (newest)
+      const timestamps = fusedMemories.map(m =>
+        m.timestamp instanceof Date ? m.timestamp.getTime() : new Date(m.timestamp).getTime()
+      );
+      const minTime = Math.min(...timestamps);
+      const maxTime = Math.max(...timestamps);
+      const timeRange = maxTime - minTime || 1; // Avoid division by zero
+
+      fusedMemories.sort((a, b) => {
+        const scoreA = scoreMap.get(a.id) ?? 0;
+        const scoreB = scoreMap.get(b.id) ?? 0;
+        const timeA = a.timestamp instanceof Date ? a.timestamp.getTime() : new Date(a.timestamp).getTime();
+        const timeB = b.timestamp instanceof Date ? b.timestamp.getTime() : new Date(b.timestamp).getTime();
+        const recencyA = (timeA - minTime) / timeRange;
+        const recencyB = (timeB - minTime) / timeRange;
+        // 90% retrieval relevance + 10% recency
+        const finalA = scoreA * 0.9 + recencyA * 0.1;
+        const finalB = scoreB * 0.9 + recencyB * 0.1;
+        return finalB - finalA;
+      });
+    }
+
     // Phase 3: Prioritize using adaptive memory (skip in rawMode to remove reordering overhead)
     const isRawRecall = loadConfig().rawMode;
     if (!isRawRecall) {

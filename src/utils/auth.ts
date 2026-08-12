@@ -62,8 +62,11 @@ export function generateToken(): string {
  * Constant-time token comparison to prevent timing side-channel attacks
  */
 function timingSafeTokenCompare(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  // Hash both inputs to fixed-length digests before comparing.
+  // This prevents leaking token length via timing on the early-return path.
+  const hashA = crypto.createHash('sha256').update(a).digest();
+  const hashB = crypto.createHash('sha256').update(b).digest();
+  return crypto.timingSafeEqual(hashA, hashB);
 }
 
 /**

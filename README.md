@@ -24,7 +24,7 @@
 <p align="center">
   <img alt="Version" src="https://img.shields.io/badge/version-2.1.0-blue">
   <img alt="Tests" src="https://img.shields.io/badge/tests-2%2C310%20passing-brightgreen">
-  <img alt="Benchmarks" src="https://img.shields.io/badge/benchmarks-18%2F18%20passing-brightgreen">
+  <img alt="Benchmarks" src="https://img.shields.io/badge/benchmarks-74.6%2F100%20(16%2F18%20pass)-blue">
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.4-blue">
   <img alt="MCP" src="https://img.shields.io/badge/MCP-compatible-purple">
   <img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-orange">
@@ -35,7 +35,7 @@
 
 ## What's New in v2.1
 
-Titan Memory v2.1 adds an optional **LLM Turbo Layer** that pushes benchmark scores from 84.2% to **90.7%** — closing the gap with funded competitors that use GPT-4 and Gemini Pro. Zero new npm dependencies. LLM is OFF by default — the zero-LLM pipeline remains the default fallback.
+Titan Memory v2.1 adds an optional **LLM Turbo Layer** for enhanced retrieval quality. Zero new npm dependencies. LLM is OFF by default — the zero-LLM pipeline remains the default fallback. Benchmark scores are under active review and will be updated with verified methodology.
 
 | Feature | Description |
 |---------|-------------|
@@ -46,7 +46,7 @@ Titan Memory v2.1 adds an optional **LLM Turbo Layer** that pushes benchmark sco
 | **Per-Capability Toggles** | Enable/disable classify, extract, rerank, and summarize independently. Only pay for what you use |
 | **Groq Support** | Ultra-low latency inference (~350ms/call) via Groq API with Llama 3.3 70B |
 
-**Benchmark improvement:** 84.2% → **90.7%** with LLM mode enabled. Key wins: info-extraction +20pts, knowledge-updates +12pts.
+**Verified benchmark scores (April 2, 2026):** Overall **74.6/100** with Voyage AI embeddings (16/18 tests passing). Accuracy: 72.8/100, Latency: 90.8/100, Compression: 43.5/100. Two known weak areas: temporal reasoning (41.7% — requires multi-step temporal inference that pure vector search cannot perform) and knowledge updates (48.0% — requires understanding "replaced/superseded" semantics, an inherently LLM-level task). Both improve with LLM Turbo mode enabled. Previously reported figures (84.2%/90.7%) were measured under conditions that could not be independently reproduced. Hash-based offline embeddings produce significantly lower retrieval accuracy — Voyage AI embeddings are recommended for production quality.
 
 ### v2.1.2 — Security, Testing & Architecture (March 28, 2026)
 

@@ -4,6 +4,13 @@
   "description": "Universal Cognitive Memory Layer - 5-layer AI memory system with intent-aware retrieval, causal graphs, and working memory",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "bin",
+    "plugin",
+    "LICENSE",
+    "README.md"
+  ],
   "bin": {
     "titan": "./dist/cli/index.js",
     "titan-mcp": "./bin/titan-mcp.js",

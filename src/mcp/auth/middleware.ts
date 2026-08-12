@@ -25,7 +25,7 @@ export interface AuthMiddlewareConfig {
  */
 export interface AuthenticatedRequest extends Request {
   auth?: {
-    token: VerifiedToken;
+    token?: VerifiedToken;
     bypassed: boolean;
   };
 }
@@ -84,7 +84,7 @@ export function createAuthMiddleware(config: AuthMiddlewareConfig) {
           remoteAddress,
         });
       }
-      req.auth = { token: null as unknown as VerifiedToken, bypassed: true };
+      req.auth = { bypassed: true };
       next();
       return;
     }

@@ -6,6 +6,8 @@
   "enableSurpriseFiltering": true,
   "enableContinualLearning": true,
   "offlineMode": false,
+  "zillizUri": "",
+  "zillizToken": "",
 
   "cortex": {
     "enabled": true,
@@ -24,7 +26,8 @@
     "dimension": 1024,
     "cacheSize": 10000,
     "batchSize": 32,
-    "timeout": 30000
+    "timeout": 30000,
+    "apiKey": "pa-4pbibpJSA5JSuJm-DeC2497Gi-LOliFlDH0oYEeeCoe"
   },
 
   "semanticSurprise": {
@@ -49,8 +52,8 @@
     "enabled": true,
     "rerankStrategy": "rrf",
     "rrfK": 60,
-    "denseWeight": 0.5,
-    "sparseWeight": 0.5,
+    "denseWeight": 0.6,
+    "sparseWeight": 0.4,
     "candidateMultiplier": 3,
     "bm25K1": 1.2,
     "bm25B": 0.75
