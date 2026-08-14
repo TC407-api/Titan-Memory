@@ -13,7 +13,10 @@ describe('Cortex Types', () => {
     it('should have all required fields', () => {
       expect(DEFAULT_CORTEX_CONFIG).toHaveProperty('enabled', false);
       expect(DEFAULT_CORTEX_CONFIG).toHaveProperty('retrieveCount', 50);
-      expect(DEFAULT_CORTEX_CONFIG).toHaveProperty('highlightThreshold', 0.8);
+      // 0.2, not 0.8 — the highlight model's real output range tops out well below 0.8,
+      // so the old default discarded every sentence of every document unconditionally.
+      // Measured correct answers score 0.4517 / 0.5655 / 0.2719. See src/cortex/types.ts.
+      expect(DEFAULT_CORTEX_CONFIG).toHaveProperty('highlightThreshold', 0.2);
       expect(DEFAULT_CORTEX_CONFIG).toHaveProperty('classifierConfidenceThreshold', 0.6);
       expect(DEFAULT_CORTEX_CONFIG).toHaveProperty('enableGuardrails', false);
       expect(DEFAULT_CORTEX_CONFIG).toHaveProperty('enableDriftMonitor', false);

@@ -325,7 +325,10 @@ describe('Project Isolation', () => {
       } else {
         expect(result.summaries.length).toBeGreaterThanOrEqual(0);
       }
-    });
+      // 30s, not the 5s default: this exercises a real add + recall round trip against the
+      // live default collection. It used to finish inside 5s only because get() was sending
+      // `ids` and being rejected outright — the work is now actually performed.
+    }, 30000);
 
     it('should use default data directory', () => {
       const defaultPaths = getProjectPaths();

@@ -43,7 +43,7 @@
     "highlightOnRecall": true
   },
   "hybridSearch": {
-    "enabled": true,
+    "enabled": false,
     "rerankStrategy": "rrf",
     "rrfK": 60,
     "denseWeight": 0.6,

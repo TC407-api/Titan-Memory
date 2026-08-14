@@ -410,14 +410,18 @@ describe('ZillizClient.get()', () => {
     expect(result!.metadata.timestamp).toBe('2026-03-20T00:00:00.000Z');
   });
 
-  it('should POST with the correct ids array', async () => {
+  it('should POST the id array under the key Zilliz actually requires', async () => {
     fetchMock.mockResolvedValueOnce(mockResponse({ code: 0, data: [] }));
 
     const client = new ZillizClient(BASE_CONFIG);
     await client.get('abc-123');
 
     const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
-    expect(body.ids).toEqual(['abc-123']);
+    // This assertion previously required `ids`, which mirrored the implementation rather
+    // than the API. Verified against live Zilliz: `ids` is rejected with code 1802
+    // ("Field validation for 'ID' failed on the 'required' tag"), `id` returns code 0.
+    expect(body.id).toEqual(['abc-123']);
+    expect(body.ids).toBeUndefined();
     expect(body.collectionName).toBe('test-memories');
   });
 });
@@ -564,5 +568,74 @@ describe('ZillizClient.isHybridSearchEnabled()', () => {
   it('should return true when enableHybridSearch is set', () => {
     const client = new ZillizClient({ ...BASE_CONFIG, enableHybridSearch: true });
     expect(client.isHybridSearchEnabled()).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Read paths must not swallow a rejected query into an empty result
+//
+// Regression: Zilliz answers HTTP 200 with a non-zero `code` when it refuses a
+// query. `data.data || data.results || []` turned that into a successful empty
+// search, so a hybrid query against a non-existent `sparse_embedding` field
+// (code 1801) returned "no matches" on every recall for months instead of
+// failing. An error and an empty result must never be the same value.
+// ---------------------------------------------------------------------------
+
+describe('ZillizClient error-vs-empty distinction', () => {
+  const REJECTED = {
+    code: 1801,
+    message: 'can only accept json format request, error: cannot find a vector field named: sparse_embedding',
+  };
+
+  it('search() should throw on a non-zero code rather than return []', async () => {
+    fetchMock.mockResolvedValueOnce(mockResponse(REJECTED));
+    const client = new ZillizClient(BASE_CONFIG);
+
+    await expect(client.search('anything', 5)).rejects.toThrow(/code 1801/);
+  });
+
+  it('search() error should name the operation and collection for diagnosis', async () => {
+    fetchMock.mockResolvedValueOnce(mockResponse(REJECTED));
+    const client = new ZillizClient(BASE_CONFIG);
+
+    await expect(client.search('anything', 5)).rejects.toThrow(/search failed on collection 'test-memories'/);
+  });
+
+  it('search() should still return [] for a legitimately empty result (code 0)', async () => {
+    fetchMock.mockResolvedValueOnce(mockResponse({ code: 0, data: [] }));
+    const client = new ZillizClient(BASE_CONFIG);
+
+    await expect(client.search('no matches', 5)).resolves.toEqual([]);
+  });
+
+  it('search() should treat an absent code as success', async () => {
+    fetchMock.mockResolvedValueOnce(mockResponse({ data: [] }));
+    const client = new ZillizClient(BASE_CONFIG);
+
+    await expect(client.search('no code field', 5)).resolves.toEqual([]);
+  });
+
+  it('hybridSearch() should throw on the sparse_embedding rejection', async () => {
+    fetchMock.mockResolvedValueOnce(mockResponse(REJECTED));
+    const client = new ZillizClient({ ...BASE_CONFIG, enableHybridSearch: true });
+
+    await expect(
+      client.hybridSearch('anything', 5, { rerankStrategy: 'rrf' } as HybridSearchOptions)
+    ).rejects.toThrow(/hybrid_search failed .*\(code 1801\)/);
+  });
+
+  it('get() should throw rather than report the memory as missing', async () => {
+    fetchMock.mockResolvedValueOnce(mockResponse({ code: 500, message: 'internal error' }));
+    const client = new ZillizClient(BASE_CONFIG);
+
+    // Returning null here would tell a caller verifying a write that it never landed.
+    await expect(client.get('550e8400-e29b-41d4-a716-446655440000')).rejects.toThrow(/get failed/);
+  });
+
+  it('getRecent() should throw on a non-zero code', async () => {
+    fetchMock.mockResolvedValueOnce(mockResponse({ code: 500, message: 'internal error' }));
+    const client = new ZillizClient(BASE_CONFIG);
+
+    await expect(client.getRecent(10)).rejects.toThrow(/getRecent failed/);
   });
 });

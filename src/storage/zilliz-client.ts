@@ -42,6 +42,17 @@ export class DefaultEmbeddingGenerator implements IEmbeddingGenerator {
 }
 
 /**
+ * Shape of a Zilliz v2 REST search / hybrid_search response body.
+ * `code` is 0 on success — including a search that legitimately matched nothing.
+ */
+interface ZillizSearchResponse {
+  code?: number;
+  message?: string;
+  data?: Array<Record<string, unknown>>;
+  results?: Array<Record<string, unknown>>;
+}
+
+/**
  * Zilliz Cloud client implementing the vector storage interface
  */
 export class ZillizClient implements IVectorStorage {
@@ -308,6 +319,32 @@ export class ZillizClient implements IVectorStorage {
     }
   }
 
+  /**
+   * Extract search hits from a Zilliz response body, failing loudly on a rejected query.
+   *
+   * Zilliz answers HTTP 200 even when it refuses the query — the failure is carried in the
+   * body as a non-zero `code` with no `data`. The previous `data.data || data.results || []`
+   * collapsed that into an empty array, making a broken search indistinguishable from one
+   * that legitimately matched nothing. That hid a query against a non-existent
+   * `sparse_embedding` field (code 1801) on every recall for months.
+   *
+   * A genuinely empty result set comes back as `code: 0` with an empty `data`, so this
+   * never fires on "no matches". `code` absent is treated as success for callers/mocks
+   * that do not model it.
+   */
+  private extractSearchHits(
+    body: ZillizSearchResponse,
+    operation: string,
+  ): Array<Record<string, unknown>> {
+    if (body.code !== undefined && body.code !== 0) {
+      throw new Error(
+        `Zilliz ${operation} failed on collection '${this.collection}' ` +
+        `(code ${body.code}): ${body.message ?? 'no message'}`
+      );
+    }
+    return body.data || body.results || [];
+  }
+
   async search(query: string, limit: number): Promise<VectorSearchResult[]> {
     const embedding = await this.embeddingGenerator.generateEmbedding(query);
 
@@ -327,9 +364,9 @@ export class ZillizClient implements IVectorStorage {
       }),
     });
 
-    const data = await response.json() as { code?: number; data?: Array<Record<string, unknown>>; results?: Array<Record<string, unknown>> };
+    const data = await response.json() as ZillizSearchResponse;
     // Zilliz v2 REST API returns search results in 'data' array
-    const results = data.data || data.results || [];
+    const results = this.extractSearchHits(data, 'search');
     return results.map((r: Record<string, unknown>) => {
       const meta = typeof r.metadata === 'string' ? JSON.parse(r.metadata) : (r.metadata || {});
       if (r.timestamp && !meta.timestamp) {
@@ -425,8 +462,8 @@ export class ZillizClient implements IVectorStorage {
       body: JSON.stringify(searchRequest),
     });
 
-    const data = await response.json() as { code?: number; data?: Array<Record<string, unknown>>; results?: Array<Record<string, unknown>> };
-    const results = data.data || data.results || [];
+    const data = await response.json() as ZillizSearchResponse;
+    const results = this.extractSearchHits(data, 'hybrid_search');
     return results.map((r: Record<string, unknown>) => {
       const meta = typeof r.metadata === 'string' ? JSON.parse(r.metadata) : (r.metadata || {});
       if (r.timestamp && !meta.timestamp) {
@@ -450,13 +487,19 @@ export class ZillizClient implements IVectorStorage {
       },
       body: JSON.stringify({
         collectionName: this.collection,
-        ids: [id],
+        // Zilliz v2 REST expects `id`, not `ids` — `ids` is rejected with code 1802
+        // ("Field validation for 'ID' failed on the 'required' tag"). That rejection used to
+        // be swallowed into an empty array and returned as null, i.e. "memory not found",
+        // so every get() against real Zilliz silently reported nothing existed.
+        id: [id],
         outputFields: ['id', 'content', 'timestamp', 'metadata'],
       }),
     });
 
-    const data = await response.json() as { code?: number; data?: Array<Record<string, unknown>>; results?: Array<Record<string, unknown>> };
-    const results = data.data || data.results || [];
+    const data = await response.json() as ZillizSearchResponse;
+    // Without this check a rejected get returns null — i.e. "that memory does not exist",
+    // which is exactly the wrong answer to give a caller verifying that a write landed.
+    const results = this.extractSearchHits(data, 'get');
     if (results.length > 0) {
       const r = results[0];
       const meta = typeof r.metadata === 'string' ? JSON.parse(r.metadata) : (r.metadata || {});
@@ -489,8 +532,8 @@ export class ZillizClient implements IVectorStorage {
       }),
     });
 
-    const data = await response.json() as { code?: number; data?: Array<Record<string, unknown>>; results?: Array<Record<string, unknown>> };
-    const results = data.data || data.results || [];
+    const data = await response.json() as ZillizSearchResponse;
+    const results = this.extractSearchHits(data, 'getRecent');
     return results.map((r: Record<string, unknown>) => {
       const meta = typeof r.metadata === 'string' ? JSON.parse(r.metadata) : (r.metadata || {});
       // Inject top-level timestamp into metadata so layers can access it
