@@ -165,7 +165,10 @@ export interface CortexConfig {
 export const DEFAULT_CORTEX_CONFIG: CortexConfig = {
   enabled: false,
   retrieveCount: 50,
-  highlightThreshold: 0.8,
+  // 0.2, not 0.8 — see the note in utils/semantic-highlight.ts. The highest
+  // score observed from the live model on a correct answer was 0.5655, so 0.8
+  // discarded every sentence of every document unconditionally.
+  highlightThreshold: 0.2,
   classifierConfidenceThreshold: 0.6,
   enableGuardrails: false,
   enableDriftMonitor: false,

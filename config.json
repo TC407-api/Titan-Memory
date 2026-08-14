@@ -8,18 +8,16 @@
   "offlineMode": false,
   "zillizUri": "",
   "zillizToken": "",
-
   "cortex": {
     "enabled": true,
     "retrieveCount": 50,
-    "highlightThreshold": 0.8,
+    "highlightThreshold": 0.2,
     "classifierConfidenceThreshold": 0.6,
     "enableGuardrails": true,
     "enableDriftMonitor": true,
     "enableProjectHooks": false,
     "bedrockRulesPath": ""
   },
-
   "embedding": {
     "provider": "voyage",
     "model": "voyage-3-large",
@@ -29,25 +27,21 @@
     "timeout": 30000,
     "apiKey": "pa-4pbibpJSA5JSuJm-DeC2497Gi-LOliFlDH0oYEeeCoe"
   },
-
   "semanticSurprise": {
     "algorithm": "semantic",
     "similarityThreshold": 0.65,
     "comparisionLimit": 50
   },
-
   "dataDependentDecay": {
     "strategy": "data-dependent",
-    "utilityWeight": 1.0,
-    "accessWeight": 1.0
+    "utilityWeight": 1,
+    "accessWeight": 1
   },
-
   "semanticHighlight": {
     "enabled": true,
-    "threshold": 0.5,
+    "threshold": 0.2,
     "highlightOnRecall": true
   },
-
   "hybridSearch": {
     "enabled": true,
     "rerankStrategy": "rrf",
@@ -58,7 +52,6 @@
     "bm25K1": 1.2,
     "bm25B": 0.75
   },
-
   "proactiveSuggestions": {
     "enabled": true,
     "maxSuggestions": 5,
@@ -66,7 +59,6 @@
     "minRelevance": 0.4,
     "includeHighlighting": true
   },
-
   "crossProject": {
     "enabled": true,
     "minApplicability": 0.4,

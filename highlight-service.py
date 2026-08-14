@@ -30,7 +30,12 @@ _model = None
 class HighlightRequest(BaseModel):
     question: str = Field(..., description="Query text")
     context: str = Field(..., description="Document text to highlight")
-    threshold: float = Field(0.5, description="Relevance threshold 0-1")
+    # 0.2, not 0.5. The model's absolute probabilities are low even when it is
+    # very confident: measured 0.4517 / 0.5655 / 0.2719 on correct answers with
+    # 544x separation from the next-best sentence. At 0.5 two of three realistic
+    # queries returned an EMPTY highlight, which a caller reads as "nothing
+    # relevant here" rather than "the threshold ate the answer".
+    threshold: float = Field(0.2, description="Relevance threshold 0-1")
     return_sentence_metrics: bool = Field(True, description="Return per-sentence scores")
 
 

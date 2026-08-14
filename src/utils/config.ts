@@ -42,7 +42,8 @@ const DEFAULT_CONFIG: TitanConfig = {
   cortex: {
     enabled: false,
     retrieveCount: 50,
-    highlightThreshold: 0.8,
+    // 0.2, not 0.8 — see utils/semantic-highlight.ts. Measured, not guessed.
+    highlightThreshold: 0.2,
     classifierConfidenceThreshold: 0.6,
     enableGuardrails: false,
     enableDriftMonitor: false,

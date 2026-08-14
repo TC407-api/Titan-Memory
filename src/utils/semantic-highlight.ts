@@ -14,7 +14,16 @@ import { cosineSimilarity } from '../storage/embeddings/index.js';
 
 const DEFAULT_CONFIG: Required<SemanticHighlightConfig> = {
   enabled: true,
-  threshold: 0.5,
+  // 0.2, not 0.5. Measured 2026-08-14 against the live sidecar on three
+  // realistic query/document pairs. The model discriminates extremely well —
+  // 544x separation between the correct sentence and the next best — but its
+  // absolute probabilities are LOW: correct answers scored 0.4517, 0.5655 and
+  // 0.2719. At 0.5 two of those three queries returned NOTHING AT ALL, which is
+  // the worst possible failure here: the caller gets an empty highlight and
+  // reads it as "no relevant content" rather than "threshold ate the answer".
+  // 0.2 is the highest value that kept the correct sentence, and only the
+  // correct sentence, on all three. Re-measure before raising it.
+  threshold: 0.2,
   model: 'zilliz',  // Prefer Zilliz model via sidecar
   highlightOnRecall: true,
   maxSentences: 100,
