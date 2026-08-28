@@ -25,7 +25,7 @@
     "cacheSize": 10000,
     "batchSize": 32,
     "timeout": 30000,
-    "apiKey": "pa-4pbibpJSA5JSuJm-DeC2497Gi-LOliFlDH0oYEeeCoe"
+    "apiKey": ""
   },
   "semanticSurprise": {
     "algorithm": "semantic",

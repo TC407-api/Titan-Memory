@@ -1,0 +1,28 @@
+title = "Titan Memory gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "voyage-api-key"
+description = "Voyage AI API key"
+regex = '''pa-[A-Za-z0-9_-]{40,}'''
+keywords = ["pa-"]
+
+[[rules]]
+id = "field-ghost-brain-key"
+description = "Field Ghost / Brain API key"
+regex = '''fgb_[A-Za-z0-9]{40,}'''
+keywords = ["fgb_"]
+
+[[rules]]
+id = "openai-service-account-key"
+description = "OpenAI service-account key"
+regex = '''sk-svcacct-[A-Za-z0-9_-]{20,}'''
+keywords = ["sk-svcacct-"]
+
+[[rules]]
+id = "zilliz-api-token"
+description = "Zilliz Cloud API token (db_xxx:xxx or long hex)"
+regex = '''(?i)zilliz[_-]?token["'\s:=]+["']?[A-Za-z0-9]{20,}[:_-][A-Za-z0-9]{20,}'''
+keywords = ["zilliz"]

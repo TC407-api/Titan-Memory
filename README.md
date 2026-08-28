@@ -1,4 +1,6 @@
 <p align="center">
+
+[![gitleaks](https://github.com/TC407-api/Titan-Memory/actions/workflows/gitleaks.yml/badge.svg)](https://github.com/TC407-api/Titan-Memory/actions/workflows/gitleaks.yml)
   <img src="assets/titan-hero.jpeg" alt="Titan Memory — Persistent Memory from the Gods" width="900">
 </p>
 
