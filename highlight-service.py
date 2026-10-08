@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 
 import torch
 from transformers import AutoModel
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 import uvicorn
 
@@ -25,6 +25,11 @@ logger = logging.getLogger("highlight-service")
 
 # Global model reference
 _model = None
+
+# Largest context accepted. Measured 2026-10-08 on M1 (CPU, inference_mode): 192k chars
+# peaked at 5.5 GB and took 61 s. Larger inputs are refused with 413, never truncated
+# silently, so a caller learns its input was too big instead of getting a partial highlight.
+MAX_CONTEXT_CHARS = int(os.environ.get("HIGHLIGHT_MAX_CONTEXT_CHARS", "200000"))
 
 
 class HighlightRequest(BaseModel):
@@ -85,12 +90,25 @@ async def highlight(req: HighlightRequest):
             sentence_probabilities=[],
         )
 
-    result = _model.process(
-        question=req.question,
-        context=req.context,
-        threshold=req.threshold,
-        return_sentence_metrics=req.return_sentence_metrics,
-    )
+    if len(req.context) > MAX_CONTEXT_CHARS:
+        logger.warning(f"refused context of {len(req.context)} chars (max {MAX_CONTEXT_CHARS})")
+        raise HTTPException(status_code=413, detail=f"context exceeds {MAX_CONTEXT_CHARS} chars")
+    logger.info(f"highlight request: context {len(req.context)} chars, question {len(req.question)} chars")
+
+    # inference_mode, not plain process(): the model's batch inference path is not wrapped
+    # in no_grad, so autograd kept every layer's activations. Memory then scaled with input
+    # size: 12k chars peaked 7.9 GB, 24k exceeded 8 GB, and on 2026-10-06 it reached ~31 GB,
+    # was OOM-killed 11 times, and the memory storm left M1's network links failed until
+    # their DHCP leases expired. With inference_mode: 12k 2.4 GB, 192k 5.5 GB, back to ~2 GB.
+    # The endpoint stays async (one request at a time on the event loop) on purpose:
+    # a sync handler would run requests in parallel threads and multiply peak memory.
+    with torch.inference_mode():
+        result = _model.process(
+            question=req.question,
+            context=req.context,
+            threshold=req.threshold,
+            return_sentence_metrics=req.return_sentence_metrics,
+        )
 
     return HighlightResponse(
         highlighted_sentences=result.get("highlighted_sentences", []),
