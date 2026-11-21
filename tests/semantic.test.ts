@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SemanticMemoryLayer } from '../src/layers/semantic.js';
 import { MemoryEntry, MemoryLayer } from '../src/types.js';
+import { updateConfig } from '../src/utils/config.js';
 
 describe('SemanticMemoryLayer', () => {
   let semantic: SemanticMemoryLayer;
@@ -15,7 +16,10 @@ describe('SemanticMemoryLayer', () => {
   beforeEach(async () => {
     testDataDir = path.join(process.cwd(), 'test-data-semantic', `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`);
     fs.mkdirSync(testDataDir, { recursive: true });
-    process.env.TITAN_DATA_DIR = testDataDir;
+    // The layer stores under config.dataDir (it ignores TITAN_DATA_DIR). Without this,
+    // every test file shares ~/.claude/titan-memory/data/semantic/patterns.json, and a
+    // stale pattern left there by an earlier file makes the query tests order-dependent.
+    updateConfig({ dataDir: testDataDir });
 
     semantic = new SemanticMemoryLayer();
     await semantic.initialize();

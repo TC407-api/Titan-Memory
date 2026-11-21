@@ -7,7 +7,11 @@ import { z } from 'zod';
 import { TitanMemory, initTitan } from '../titan.js';
 import { getToolHandler } from './tool-registry.js';
 
-// Tool input schemas using Zod for validation
+// Tool input schemas using Zod for validation.
+// Optional fields carry no .default(): an omitted field must reach the handler
+// as undefined so the handler's own default applies. Zod 4 applies a .default()
+// even when it is wrapped in .optional() (Zod 3 did not); see
+// tests/mcp-tool-schemas.test.ts.
 export const ToolSchemas = {
   titan_add: z.object({
     content: z.string().describe('Memory content to store'),
@@ -21,11 +25,11 @@ export const ToolSchemas = {
 
   titan_recall: z.object({
     query: z.string().describe('Search query'),
-    limit: z.number().default(10).optional().describe('Maximum results to return'),
+    limit: z.number().optional().describe('Maximum results to return'),
     layers: z.array(z.number()).optional().describe('Specific layers to query (2-5)'),
     projectId: z.string().optional().describe('Filter by project'),
     tags: z.array(z.string()).optional().describe('Filter by tags'),
-    mode: z.enum(['full', 'summary', 'metadata']).default('full').optional()
+    mode: z.enum(['full', 'summary', 'metadata']).optional()
       .describe('FR-2: Response mode - full (default), summary (100 chars + metadata), or metadata only'),
     agentId: z.string().optional().describe('v2.2: Agent identifier for namespace isolation filtering'),
   }),
@@ -56,9 +60,9 @@ export const ToolSchemas = {
   titan_today: z.object({}),
 
   titan_prune: z.object({
-    decayThreshold: z.number().default(0.05).optional().describe('Decay score threshold (0-1)'),
-    dryRun: z.boolean().default(false).optional().describe('Preview without deleting'),
-    utilityThreshold: z.number().default(0.4).optional()
+    decayThreshold: z.number().optional().describe('Decay score threshold (0-1)'),
+    dryRun: z.boolean().optional().describe('Preview without deleting'),
+    utilityThreshold: z.number().optional()
       .describe('FR-1: Utility score threshold (0-1). Memories with utility below this are candidates for pruning'),
   }),
 
@@ -73,16 +77,16 @@ export const ToolSchemas = {
   // MIRAS Enhancement: Proactive Suggestions
   titan_suggest: z.object({
     context: z.string().describe('Current context or task description to get suggestions for'),
-    limit: z.number().default(5).optional().describe('Maximum suggestions to return (default: 5)'),
-    minRelevance: z.number().default(0.5).optional().describe('Minimum relevance threshold (0-1)'),
-    includeHighlighting: z.boolean().default(true).optional().describe('Include highlighted relevant portions'),
+    limit: z.number().optional().describe('Maximum suggestions to return (default: 5)'),
+    minRelevance: z.number().optional().describe('Minimum relevance threshold (0-1)'),
+    includeHighlighting: z.boolean().optional().describe('Include highlighted relevant portions'),
   }),
 
   // MIRAS Enhancement: Find Cross-Project Patterns
   titan_patterns: z.object({
     query: z.string().describe('Query to find relevant patterns'),
-    limit: z.number().default(5).optional().describe('Maximum patterns to return'),
-    minRelevance: z.number().default(0.6).optional().describe('Minimum relevance threshold'),
+    limit: z.number().optional().describe('Maximum patterns to return'),
+    minRelevance: z.number().optional().describe('Minimum relevance threshold'),
     domain: z.string().optional().describe('Filter by domain (e.g., "backend", "frontend", "general")'),
   }),
 
@@ -154,13 +158,13 @@ export const ToolSchemas = {
   // v2.0 Working Memory schemas
   titan_focus_add: z.object({
     content: z.string().describe('Content to add to working memory focus'),
-    priority: z.enum(['high', 'normal', 'low']).default('normal').optional(),
+    priority: z.enum(['high', 'normal', 'low']).optional(),
     ttlMs: z.number().optional().describe('Time-to-live in milliseconds'),
     source: z.string().optional().describe('Source of this focus item'),
   }),
 
   titan_focus_list: z.object({
-    asContext: z.boolean().default(false).optional().describe('Return as formatted context string'),
+    asContext: z.boolean().optional().describe('Return as formatted context string'),
   }),
 
   titan_focus_clear: z.object({}),
@@ -183,9 +187,9 @@ export const ToolSchemas = {
 
   titan_expand: z.object({
     compressed: z.string().describe('Compressed memory JSON string (output from titan_compress)'),
-    verbosity: z.enum(['minimal', 'normal', 'detailed']).default('normal').optional()
+    verbosity: z.enum(['minimal', 'normal', 'detailed']).optional()
       .describe('Output verbosity level'),
-    format: z.enum(['prose', 'structured', 'bullet']).default('prose').optional()
+    format: z.enum(['prose', 'structured', 'bullet']).optional()
       .describe('Output format'),
   }),
 
@@ -193,12 +197,12 @@ export const ToolSchemas = {
   titan_benchmark: z.object({
     categories: z.array(z.enum(['retrieval', 'latency', 'token-efficiency', 'accuracy'])).optional()
       .describe('Categories to run (default: all)'),
-    verbose: z.boolean().default(false).optional().describe('Show detailed output'),
-    llmMode: z.boolean().default(false).optional()
+    verbose: z.boolean().optional().describe('Show detailed output'),
+    llmMode: z.boolean().optional()
       .describe('v2.1: Temporarily enable LLM Turbo Layer for this benchmark run'),
-    rawMode: z.boolean().default(false).optional()
+    rawMode: z.boolean().optional()
       .describe('v2.1: Disable safety overhead (validator, adaptive reordering, post-store) for clean measurement'),
-    runs: z.number().min(1).max(10).default(1).optional()
+    runs: z.number().min(1).max(10).optional()
       .describe('v2.1: Number of runs for statistical averaging (default: 1, max: 10)'),
   }),
 
@@ -221,9 +225,9 @@ export const ToolSchemas = {
     query: z.string().optional().describe('Optional query to filter categories'),
     category: z.enum(['knowledge', 'profile', 'event', 'behavior', 'skill']).optional()
       .describe('Filter to a specific category'),
-    depth: z.number().min(1).max(2).default(1).optional()
+    depth: z.number().min(1).max(2).optional()
       .describe('Depth 1: category summaries (~500 tokens). Depth 2: full memories for category'),
-    tokenBudget: z.number().default(2048).optional()
+    tokenBudget: z.number().optional()
       .describe('Maximum tokens to return (default: 2048)'),
   }),
 };
