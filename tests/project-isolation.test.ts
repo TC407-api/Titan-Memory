@@ -18,6 +18,8 @@ import {
   ensureProjectDirectories,
   getProjectCollectionName,
   listProjects,
+  getConfig,
+  updateConfig,
 } from '../src/utils/config';
 import { TitanMemory, initTitanForProject } from '../src/titan';
 
@@ -197,6 +199,20 @@ describe('Project Isolation', () => {
 
       const projects = listProjects();
       expect(projects).toContain(projectId);
+    });
+
+    it('should list projects under the configured dataDir, not under $HOME', () => {
+      const originalDataDir = getConfig().dataDir;
+      const customDataDir = path.join(testBaseDir, 'custom-data-dir');
+      const projectId = `custom-dir-${Date.now()}`;
+      try {
+        updateConfig({ dataDir: customDataDir });
+        ensureProjectDirectories(projectId);
+        expect(fs.existsSync(path.join(customDataDir, 'projects', projectId))).toBe(true);
+        expect(listProjects()).toContain(projectId);
+      } finally {
+        updateConfig({ dataDir: originalDataDir });
+      }
     });
   });
 
