@@ -363,13 +363,9 @@ export function getProjectCollectionName(projectId?: string): string {
  * @returns Array of project IDs
  */
 export function listProjects(): string[] {
-  const projectsDir = path.join(
-    process.env.HOME || process.env.USERPROFILE || '',
-    '.claude',
-    'titan-memory',
-    'data',
-    'projects'
-  );
+  // Same base as getProjectDataDir(), so every project ensureProjectDirectories()
+  // creates is listed, including under a configured or overridden dataDir.
+  const projectsDir = path.join(currentConfig.dataDir, 'projects');
 
   if (!fs.existsSync(projectsDir)) {
     return ['default'];
