@@ -220,6 +220,25 @@ triggers:
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it('should keep a quoted number or boolean as the string it spells', async () => {
+    const dir = makeTempDir('quoted-number');
+    const content = `---
+name: "2026"
+version: "007"
+description: 'true'
+triggers:
+  - quoted-number
+---
+`;
+    const filePath = writeSkillMd(dir, 'quoted-number.skill.md', content);
+    const result = await loadSkillFromFile(filePath);
+    expect(result).not.toBeNull();
+    expect(result!.metadata.name).toBe('2026');
+    expect(result!.metadata.version).toBe('007');
+    expect(result!.metadata.description).toBe('true');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it('should ignore comment lines and blank lines in frontmatter', async () => {
     const dir = makeTempDir('comments');
     const content = `---
@@ -282,6 +301,22 @@ triggers:
     const result = await loadSkillFromFile(filePath);
     expect(result).toBeNull();
     warnSpy.mockRestore();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('should return null when the name is not a string', async () => {
+    const dir = makeTempDir('numeric-name');
+    const content = `---
+name: 2026
+triggers:
+  - numeric-name
+---
+`;
+    const filePath = writeSkillMd(dir, 'numeric-name.skill.md', content);
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const result = await loadSkillFromFile(filePath);
+    expect(result).toBeNull();
+    errorSpy.mockRestore();
     fs.rmSync(dir, { recursive: true, force: true });
   });
 

@@ -377,6 +377,24 @@ describe('SkillWatcher file events (end to end)', () => {
     expect(names('unloaded')).toEqual([]);
   }, 30000);
 
+  it('does not let a quoted numeric name take the name of a code skill', async () => {
+    const codePath = path.join(skillsDir, 'year.js');
+    const code = codeSkillFile(codePath, '2026', ['year']);
+    getSkillRegistry().register(code);
+    startWatcher();
+
+    const markdown = path.join(skillsDir, 'year.skill.md');
+    fs.writeFileSync(markdown, '---\nname: "2026"\ntriggers: [year]\n---\nbody\n');
+    await waitFor(
+      () => errorsFor(markdown).length > 0 || names('loaded').length > 0,
+      "an 'error' or a 'loaded' for year.skill.md"
+    );
+
+    expect(errorsFor(markdown)[0]).toContain(codePath);
+    expect(getSkillRegistry().getFile('2026')).toBe(code);
+    expect(getSkillRegistry().count()).toBe(1);
+  }, 30000);
+
   it('unloads the skills it loaded when it is stopped, and loads them again on start()', async () => {
     const started = startWatcher();
     await addAndWaitForLoad(skillsDir, 'while-running');

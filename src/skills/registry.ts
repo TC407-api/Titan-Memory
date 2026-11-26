@@ -19,8 +19,9 @@ export class SkillRegistry {
   private listeners: SkillEventListener[] = [];
   private executionStats: Map<string, { count: number; totalTimeMs: number }> = new Map();
   private lastReloadAt?: Date;
-  // Disabled skills, at most one record per file: the file and the skill
-  // name it is disabled under. Kept when the skill is unregistered, so that
+  // Disabled skills: the file and the skill name it is disabled under. One
+  // record per file, and one more for each other name still registered from
+  // that file (see rememberDisabledSkill). Kept when the skill is unregistered, so that
   // loading its file again does not make it runnable again. A record without
   // a name keeps its file disabled and no longer disables a name (see enable()).
   private disabledSkills: Array<{ name?: string; path: string }> = [];

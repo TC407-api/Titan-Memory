@@ -67,13 +67,16 @@ function parseFrontmatter(content: string): { metadata: Record<string, unknown>;
         currentKey = null;
         currentArray = null;
       } else {
-        // Simple value
+        // Simple value. A quoted value stays the string it spells; only a
+        // bare value is read as a boolean or a number.
+        const isQuoted = /^(["']).*\1$/.test(value);
         let parsedValue: unknown = value.replace(/^["']|["']$/g, '');
-        // Try to parse numbers and booleans
-        if (parsedValue === 'true') parsedValue = true;
-        else if (parsedValue === 'false') parsedValue = false;
-        else if (!isNaN(Number(parsedValue)) && parsedValue !== '') {
-          parsedValue = Number(parsedValue);
+        if (!isQuoted) {
+          if (parsedValue === 'true') parsedValue = true;
+          else if (parsedValue === 'false') parsedValue = false;
+          else if (!isNaN(Number(parsedValue)) && parsedValue !== '') {
+            parsedValue = Number(parsedValue);
+          }
         }
         metadata[key] = parsedValue;
         currentKey = null;
@@ -94,13 +97,15 @@ function parseFrontmatter(content: string): { metadata: Record<string, unknown>;
  * Validate skill metadata
  */
 function validateMetadata(metadata: Record<string, unknown>): SkillMetadata {
-  const name = metadata.name as string;
+  const name = metadata.name;
   const version = (metadata.version as string) || '1.0.0';
   const description = (metadata.description as string) || '';
   const triggers = (metadata.triggers as string[]) || [];
 
-  if (!name) {
-    throw new Error('Skill metadata must include a name');
+  // The registry is keyed by the name, so it must be a string: a bare
+  // `name: 2026` would be registered under a number no caller can look up.
+  if (typeof name !== 'string' || name.trim() === '') {
+    throw new Error('Skill metadata must include a name (a non-empty string)');
   }
 
   if (!Array.isArray(triggers) || triggers.length === 0) {
