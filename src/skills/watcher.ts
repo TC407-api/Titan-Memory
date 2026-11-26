@@ -58,7 +58,7 @@ interface FileLoad {
 /** The watcher's disabled skill from a file, as the watcher unregistered it. */
 interface UnloadRecord {
   name: string;
-  /** The registry's id of the disable that was in force (getDisableId()). */
+  /** The registry's id of the disable that was in force (getDisable()). */
   disableId: number;
 }
 
@@ -115,11 +115,16 @@ function isRegularFile(filePath: string): boolean {
  * disabled. When the watcher's skill from a file was disabled as it was
  * unregistered, and the watcher next registers a skill from that file under
  * another name (an edit, also after a broken save, a delete and re-add of
- * the file, or stop() and start()), the disable moves to the new name: the
- * new skill is disabled and the old name is enabled again, unless a skill
- * is registered under it. This happens only while that same disable is in
- * force (see SkillRegistry.getDisableId()): after an enable() of the old
- * name, a later disable of it, from any file, does not move.
+ * the file, or stop() and start()), the new skill is disabled too. This
+ * happens only while that same disable is in force (see
+ * SkillRegistry.getDisable()): after an enable() of the old name, a later
+ * disable of it, from any file, does not carry over. When the disable was
+ * made for this file's skill, it moves: the old name is enabled again,
+ * unless a skill is registered under it. When the file was disabled only
+ * because it took over a disabled name, the disable is copied and the old
+ * name stays disabled. A registration that carried a disable but did not
+ * stand (the watcher was stopped, or a listener removed it) takes back the
+ * disable it made, and leaves the old name as it was.
  *
  * The watcher unloads only skills it loaded: when a file is deleted, broken,
  * renamed inside or replaced by a link, and on stop(). Each unload removes
@@ -541,19 +546,23 @@ export class SkillWatcher {
       }
       return;
     }
+    const hadDisable = registry.isNameDisabled(name);
     const carried = this.carryDisable(skillFile);
     registry.register(skillFile);
     if (registry.getFile(name) !== skillFile) {
-      return; // A registry listener replaced or removed it during the register.
+      // A registry listener replaced or removed it during the register.
+      if (carried && !hadDisable) this.undoCarriedDisable(name, filePath);
+      return;
     }
     if (generation !== this.generation) {
       registry.unregister(name);
+      if (carried && !hadDisable) this.undoCarriedDisable(name, filePath);
       return;
     }
     this.ownedFiles.set(filePath, skillFile);
     // Carried over or not, the record is used up: it never applies to a later load.
     this.lastUnloaded.delete(filePath);
-    if (carried) this.releaseOldName(carried);
+    if (carried) this.releaseOldName(carried, filePath);
     this.emit(eventType === 'add' ? 'loaded' : 'reloaded', name, filePath);
   }
 
@@ -593,7 +602,7 @@ export class SkillWatcher {
     const registry = getSkillRegistry();
     const name = skillFile.metadata.name;
     const isRegistered = registry.getFile(name) === skillFile;
-    const disableId = isRegistered && !skillFile.enabled ? registry.getDisableId(name) : undefined;
+    const disableId = isRegistered && !skillFile.enabled ? registry.getDisable(name)?.id : undefined;
     if (disableId === undefined) {
       this.lastUnloaded.delete(skillFile.path);
     } else {
@@ -612,7 +621,7 @@ export class SkillWatcher {
     if (
       !previous ||
       previous.name === skillFile.metadata.name ||
-      getSkillRegistry().getDisableId(previous.name) !== previous.disableId
+      getSkillRegistry().getDisable(previous.name)?.id !== previous.disableId
     ) {
       return undefined;
     }
@@ -621,14 +630,34 @@ export class SkillWatcher {
   }
 
   /**
-   * After a disable moved to a file's new skill name: lift it from the old
-   * name, unless a skill is registered under that name or the disable in
-   * force is no longer the one that moved.
+   * After a disable was carried to a file's new skill name: lift it from the
+   * old name, so the disable has moved. Only when that disable was made for
+   * this file's skill, is still the one in force, and nothing is registered
+   * under the old name. A file that was disabled because it took over a
+   * disabled name copies the disable and cannot lift it from that name.
    */
-  private releaseOldName(previous: UnloadRecord): void {
+  private releaseOldName(previous: UnloadRecord, filePath: string): void {
     const registry = getSkillRegistry();
-    if (!registry.has(previous.name) && registry.getDisableId(previous.name) === previous.disableId) {
+    const disable = registry.getDisable(previous.name);
+    if (
+      !registry.has(previous.name) &&
+      disable?.id === previous.disableId &&
+      disable.path === filePath
+    ) {
       registry.enable(previous.name);
+    }
+  }
+
+  /**
+   * A registration that carried a disable to a name that had none did not
+   * stand (the watcher was stopped, or a listener removed it): lift the
+   * disable it made, unless a skill is registered under the name now or the
+   * disable in force was made for another file.
+   */
+  private undoCarriedDisable(name: string, filePath: string): void {
+    const registry = getSkillRegistry();
+    if (!registry.has(name) && registry.getDisable(name)?.path === filePath) {
+      registry.enable(name);
     }
   }
 

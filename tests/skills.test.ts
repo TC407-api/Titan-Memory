@@ -267,19 +267,41 @@ describe('Skill System', () => {
 
     it('should give a name a new disable id only when it goes from enabled to disabled', () => {
       registry.register(fileAt('/skills/a.skill.md', 'counted'));
-      expect(registry.getDisableId('counted')).toBeUndefined();
+      expect(registry.getDisable('counted')).toBeUndefined();
 
       registry.disable('counted');
-      const first = registry.getDisableId('counted');
+      const first = registry.getDisable('counted');
       registry.disable('counted');
       registry.register(fileAt('/skills/a.skill.md', 'counted'));
-      expect(first).toBeDefined();
-      expect(registry.getDisableId('counted')).toBe(first);
+      expect(first).toEqual({ id: expect.any(Number), path: '/skills/a.skill.md' });
+      expect(registry.getDisable('counted')?.id).toBe(first?.id);
 
       registry.enable('counted');
-      expect(registry.getDisableId('counted')).toBeUndefined();
+      expect(registry.getDisable('counted')).toBeUndefined();
       registry.disable('counted');
-      expect(registry.getDisableId('counted')).not.toBe(first);
+      expect(registry.getDisable('counted')?.id).not.toBe(first?.id);
+    });
+
+    it('should keep the file a disable was made for when another file registers under the name', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'owned-off'));
+      registry.disable('owned-off');
+      registry.register(fileAt('/skills/b.skill.md', 'owned-off'));
+      registry.disable('owned-off');
+
+      expect(registry.getDisable('owned-off')?.path).toBe('/skills/a.skill.md');
+    });
+
+    it('should never reuse a disable id in a registry made after a reset', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'first-off'));
+      registry.disable('first-off');
+      const before = registry.getDisable('first-off')?.id;
+
+      resetSkillRegistry();
+      const fresh = getSkillRegistry();
+      fresh.register(fileAt('/skills/a.skill.md', 'first-off'));
+      fresh.disable('first-off');
+
+      expect(fresh.getDisable('first-off')?.id).not.toBe(before);
     });
 
     it('should not change other names when disable() or enable() is called for one', () => {

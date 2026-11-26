@@ -952,6 +952,70 @@ describe('SkillWatcher file events (end to end)', () => {
     expect(getSkillRegistry().isEnabled('alias')).toBe(false);
   }, 30000);
 
+  it('does not let a file that inherited a disabled name lift it by a rename', async () => {
+    startWatcher();
+    const fileA = writeSkillFile(skillsDir, 'daily');
+    await waitFor(() => names('loaded').includes('daily'), "'loaded' for daily");
+    getSkillRegistry().disable('daily');
+    fs.rmSync(fileA);
+    await waitFor(() => names('unloaded').includes('daily'), "'unloaded' for daily");
+    // File b takes the name while it is disabled, so it is disabled too.
+    const fileB = path.join(skillsDir, 'b.skill.md');
+    fs.writeFileSync(fileB, skillText('daily'));
+    await waitFor(() => getSkillRegistry().getFile('daily')?.path === fileB, 'daily loaded from b');
+    expect(getSkillRegistry().isEnabled('daily')).toBe(false);
+
+    await renameAndWait(fileB, 'weekly');
+    expect(getSkillRegistry().isEnabled('weekly')).toBe(false);
+    fs.writeFileSync(fileA, skillText('daily', 'back again'));
+    await waitFor(() => getSkillRegistry().getFile('daily')?.path === fileA, 'daily loaded from a again');
+
+    expect(getSkillRegistry().isEnabled('daily')).toBe(false);
+  }, 30000);
+
+  it('does not carry a disable of a registry that was reset since', async () => {
+    startWatcher();
+    const fileA = writeSkillFile(skillsDir, 'daily');
+    await waitFor(() => names('loaded').includes('daily'), "'loaded' for daily");
+    getSkillRegistry().disable('daily');
+    fs.rmSync(fileA);
+    await waitFor(() => names('unloaded').includes('daily'), "'unloaded' for daily");
+
+    resetSkillRegistry();
+    const fresh = getSkillRegistry();
+    fresh.register(codeSkillFile(path.join(skillsDir, 'c.js'), 'daily', ['daily']));
+    expect(fresh.disable('daily')).toBe(true);
+    fresh.unregister('daily');
+    fs.writeFileSync(fileA, skillText('weekly'));
+    await waitFor(() => fresh.has('weekly'), 'weekly registered');
+
+    expect(fresh.isEnabled('weekly')).toBe(true);
+    expect(fresh.isNameDisabled('daily')).toBe(true);
+  }, 30000);
+
+  it('leaves no disable on the new name when a listener stops it during a rename that carries one', async () => {
+    const started = startWatcher();
+    const registry = getSkillRegistry();
+    const file = writeSkillFile(skillsDir, 'daily');
+    await waitFor(() => names('loaded').includes('daily'), "'loaded' for daily");
+    registry.disable('daily');
+    const stopOnLoad: Parameters<typeof registry.addEventListener>[0] = (event) => {
+      if (event.type === 'skill:loaded' && event.name === 'weekly') void started.stop();
+    };
+    registry.addEventListener(stopOnLoad);
+    try {
+      fs.writeFileSync(file, skillText('weekly'));
+      await waitFor(() => !started.isWatching(), 'the watcher to be stopped');
+      await sleep(SETTLE_MS);
+
+      expect(registry.has('weekly')).toBe(false);
+      expect(registry.isNameDisabled('weekly')).toBe(false);
+      expect(registry.isNameDisabled('daily')).toBe(true);
+    } finally {
+      registry.removeEventListener(stopOnLoad);
+    }
+  }, 30000);
+
   it('does not carry a disable that enable() lifted, after another file disables the name again', async () => {
     startWatcher();
     const fileA = writeSkillFile(skillsDir, 'daily');

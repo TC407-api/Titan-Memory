@@ -13,6 +13,17 @@ import {
   SkillSystemStats,
 } from './types.js';
 
+/** A disable in force for a skill name (see SkillRegistry.getDisable()). */
+export interface SkillDisable {
+  /** Unique in the process, also across registries (resetSkillRegistry()). */
+  readonly id: number;
+  /** The file of the skill the disable was made for. */
+  readonly path: string;
+}
+
+// Module-wide, so a disable id never repeats in a new registry.
+let nextDisableId = 1;
+
 export class SkillRegistry {
   private skills: Map<string, SkillRegistryEntry> = new Map();
   private triggerIndex: Map<string, string[]> = new Map(); // trigger -> skill names
@@ -23,10 +34,9 @@ export class SkillRegistry {
   // with `enabled: false`. A name stays here, also while nothing is
   // registered under it, until enable() is called for it. Only names are
   // kept, never files: enable() and disable() take a name, and each changes
-  // the state of that one name only. Each name maps to the id of the disable
-  // in force (see getDisableId()).
-  private disabledNames: Map<string, number> = new Map();
-  private nextDisableId = 1;
+  // the state of that one name only. Each name maps to the disable in force
+  // (see getDisable()).
+  private disabledNames: Map<string, SkillDisable> = new Map();
 
   /**
    * Register a skill.
@@ -54,7 +64,7 @@ export class SkillRegistry {
 
     // Decided after that unregister, whose listeners can call enable().
     if (!file.enabled) {
-      this.markDisabled(name);
+      this.markDisabled(name, file.path);
     }
     file.enabled = !this.disabledNames.has(name);
 
@@ -188,26 +198,36 @@ export class SkillRegistry {
     const entry = this.skills.get(name);
     if (!entry) return false;
     entry.file.enabled = false;
-    this.markDisabled(name);
+    this.markDisabled(name, entry.file.path);
     return true;
   }
 
-  /** Disable a name that is not disabled yet, under a new disable id. */
-  private markDisabled(name: string): void {
+  /**
+   * Disable a name that is not disabled yet, under a new disable id, for
+   * the skill from `filePath`. A name that is disabled already keeps its
+   * disable, and the file that disable was made for.
+   */
+  private markDisabled(name: string, filePath: string): void {
     if (!this.disabledNames.has(name)) {
-      this.disabledNames.set(name, this.nextDisableId++);
+      this.disabledNames.set(name, { id: nextDisableId++, path: filePath });
     }
   }
 
   /**
-   * The id of the disable in force for the name, or undefined when the name
-   * is not disabled. A name gets a new id each time it goes from enabled to
-   * disabled; disabling it again while it is disabled keeps the id. So when
-   * the id read earlier is still the one in force, enable() has not been
-   * called for the name since, and a disable made after an enable() cannot
-   * be taken for the earlier one.
+   * The disable in force for the name, or undefined when the name is not
+   * disabled: its id, and the file of the skill it was made for (the skill
+   * registered under the name when disable() was called, or the SkillFile
+   * registered with `enabled: false`). A skill from another file registered
+   * under the name later is disabled by it, but the disable stays made for
+   * the first file.
+   *
+   * A name gets a new id each time it goes from enabled to disabled;
+   * disabling it again while it is disabled keeps the id. Ids are unique in
+   * the process, also across registries. So when an id read earlier is
+   * still the one in force, enable() has not been called for the name
+   * since, and a later disable cannot be taken for the earlier one.
    */
-  getDisableId(name: string): number | undefined {
+  getDisable(name: string): SkillDisable | undefined {
     return this.disabledNames.get(name);
   }
 
