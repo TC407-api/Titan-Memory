@@ -9,6 +9,7 @@ import {
   createWatchFilter,
   crossesSymlink,
   globToRegExp,
+  isMarkdownSkillFile,
   PathKind,
 } from '../src/skills/watch-filter';
 
@@ -199,6 +200,33 @@ describe('createWatchFilter', () => {
     expect(onlyCustom(inRoot('custom', 'team', 'a.skill.md'), FILE)).toBe(false);
     expect(onlyCustom(inRoot('a.skill.md'), FILE)).toBe(true);
     expect(onlyCustom(inRoot('custom', 'a.ts'), FILE)).toBe(true);
+  });
+});
+
+describe('isMarkdownSkillFile', () => {
+  it('is true for a file name that ends in .skill.md, with either separator', () => {
+    expect(isMarkdownSkillFile('/skills/a.skill.md')).toBe(true);
+    expect(isMarkdownSkillFile('C:\\skills\\custom\\a.skill.md')).toBe(true);
+    expect(isMarkdownSkillFile('a.skill.md')).toBe(true);
+  });
+
+  it('is false for code files and for anything else', () => {
+    const others = [
+      'a.js',
+      'a.ts',
+      'a.skill.js',
+      'a.skill.ts',
+      'a.skill.md.js',
+      'a.skill.md/b.js',
+      'a.skill.md\\b.ts',
+      'a.md',
+      'a.skill.mdx',
+      'a.SKILL.MD',
+      'a.skill.md ',
+    ];
+    for (const other of others) {
+      expect([other, isMarkdownSkillFile(other)]).toEqual([other, false]);
+    }
   });
 });
 

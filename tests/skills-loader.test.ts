@@ -664,105 +664,102 @@ triggers:
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('should not read a file that allowLoadPath refuses, and should drop the old version', async () => {
-    const dir = makeTempDir('reload-refused');
-    const filePath = writeSkillMd(dir, 'refused.skill.md', skillMd('refused-skill'));
+  /** A promise and the function that settles it, for a hook that is still pending. */
+  function createGate(): { opened: Promise<void>; open: () => void } {
+    let open: () => void = () => undefined;
+    const opened = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    return { opened, open };
+  }
+
+  it('should keep a file disabled through a failed reload and a repair under another name', async () => {
+    const dir = makeTempDir('reload-disabled-broken-renamed');
+    const filePath = writeSkillMd(dir, 'mend.skill.md', skillMd('before-name'));
+    const registry = getSkillRegistry();
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
     await reloadSkill(filePath);
-    const allowLoadPath = jest.fn().mockReturnValue(false);
+    registry.disable('before-name');
 
-    const result = await reloadSkill(filePath, { allowLoadPath });
+    fs.writeFileSync(filePath, 'no frontmatter, so this version cannot be loaded\n');
+    expect(await reloadSkill(filePath)).toBeNull();
+    fs.writeFileSync(filePath, skillMd('after-name'));
+    await reloadSkill(filePath);
 
-    expect(result).toBeNull();
-    expect(allowLoadPath).toHaveBeenCalledWith(filePath);
-    expect(getSkillRegistry().has('refused-skill')).toBe(false);
+    expect(registry.has('after-name')).toBe(true);
+    expect(registry.isEnabled('after-name')).toBe(false);
     warnSpy.mockRestore();
     fs.rmSync(dir, { recursive: true, force: true });
   });
-});
 
-// ===========================================================================
-// loadSkillFromFile — allowLoadPath
-// ===========================================================================
+  it('should keep enable() of a renamed file through later reloads, and free the old name', async () => {
+    const dir = makeTempDir('reload-enable-after-rename');
+    const filePath = writeSkillMd(dir, 'renamed.skill.md', skillMd('before-name'));
+    const registry = getSkillRegistry();
+    await reloadSkill(filePath);
+    registry.disable('before-name');
+    fs.writeFileSync(filePath, skillMd('after-name'));
+    await reloadSkill(filePath);
 
-describe('loadSkillFromFile — allowLoadPath', () => {
-  let dir: string;
-  let warnSpy: jest.SpyInstance;
-  let errorSpy: jest.SpyInstance;
+    expect(registry.enable('after-name')).toBe(true);
+    await reloadSkill(filePath);
+    const otherPath = writeSkillMd(dir, 'other.skill.md', skillMd('before-name'));
+    await reloadSkill(otherPath);
 
-  beforeEach(() => {
-    dir = makeTempDir(`allow-load-path-${Math.random().toString(36).slice(2)}`);
-    warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-  });
-
-  afterEach(() => {
-    warnSpy.mockRestore();
-    errorSpy.mockRestore();
+    expect(registry.isEnabled('after-name')).toBe(true);
+    expect(registry.isEnabled('before-name')).toBe(true);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('should ask about the compiled sibling of a .ts file and not import it when refused', async () => {
-    const sourcePath = path.join(dir, 'compiled.ts');
-    const compiledPath = path.join(dir, 'compiled.js');
-    fs.writeFileSync(sourcePath, 'export {};\n');
-    fs.writeFileSync(compiledPath, 'module.exports = {};\n');
-    const allowLoadPath = jest.fn().mockReturnValue(false);
+  it('should keep a skill enabled when enable() succeeds while onUnload() is pending', async () => {
+    const dir = makeTempDir('reload-enable-during-unload');
+    const filePath = writeSkillMd(dir, 'flip.skill.md', skillMd('flip-skill'));
+    const registry = getSkillRegistry();
+    const gate = createGate();
+    createRegisteredSkillFile('flip-skill', filePath, { onUnload: () => gate.opened });
+    registry.disable('flip-skill');
 
-    const result = await loadSkillFromFile(sourcePath, { allowLoadPath });
+    const reloading = reloadSkill(filePath);
+    expect(registry.enable('flip-skill')).toBe(true);
+    gate.open();
+    await reloading;
 
-    expect(result).toBeNull();
-    expect(allowLoadPath.mock.calls).toEqual([[compiledPath]]);
-    // Under Jest a tried import() of a JavaScript skill fails and is logged.
-    expect(errorSpy).not.toHaveBeenCalled();
+    expect(registry.isEnabled('flip-skill')).toBe(true);
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('should ask about the compiled file in dist/skills for a .ts file in src/skills', async () => {
-    const sourcePath = path.join(dir, 'src', 'skills', 'built.ts');
-    const compiledPath = path.join(dir, 'dist', 'skills', 'built.js');
-    fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
-    fs.mkdirSync(path.dirname(compiledPath), { recursive: true });
-    fs.writeFileSync(sourcePath, 'export {};\n');
-    fs.writeFileSync(compiledPath, 'module.exports = {};\n');
-    const allowLoadPath = jest.fn().mockReturnValue(false);
+  it('should keep a skill disabled when disable() succeeds while onUnload() is pending', async () => {
+    const dir = makeTempDir('reload-disable-during-unload');
+    const filePath = writeSkillMd(dir, 'flop.skill.md', skillMd('flop-skill'));
+    const registry = getSkillRegistry();
+    const gate = createGate();
+    createRegisteredSkillFile('flop-skill', filePath, { onUnload: () => gate.opened });
 
-    const result = await loadSkillFromFile(sourcePath, { allowLoadPath });
+    const reloading = reloadSkill(filePath);
+    expect(registry.disable('flop-skill')).toBe(true);
+    gate.open();
+    await reloading;
 
-    expect(result).toBeNull();
-    expect(allowLoadPath.mock.calls).toEqual([[compiledPath]]);
-    expect(errorSpy).not.toHaveBeenCalled();
+    expect(registry.isEnabled('flop-skill')).toBe(false);
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('should ask about a .js file itself', async () => {
-    const filePath = path.join(dir, 'plain.js');
-    fs.writeFileSync(filePath, 'module.exports = {};\n');
-    const allowLoadPath = jest.fn().mockReturnValue(false);
+  it('should leave a skill that another file registered while onUnload() was pending', async () => {
+    const dir = makeTempDir('reload-moved');
+    // The file was moved: nothing is left at the old path.
+    const oldPath = path.join(dir, 'old.skill.md');
+    const gate = createGate();
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    createRegisteredSkillFile('moved-skill', oldPath, { onUnload: () => gate.opened });
 
-    const result = await loadSkillFromFile(filePath, { allowLoadPath });
+    const reloading = reloadSkill(oldPath);
+    const moved = createRegisteredSkillFile('moved-skill', path.join(dir, 'new.skill.md'));
+    gate.open();
 
-    expect(result).toBeNull();
-    expect(allowLoadPath.mock.calls).toEqual([[filePath]]);
-    expect(errorSpy).not.toHaveBeenCalled();
-  });
-
-  it('should not read a .skill.md file that is refused', async () => {
-    const filePath = writeSkillMd(dir, 'guarded.skill.md', '---\nname: guarded\ntriggers: [guarded]\n---\n');
-    const allowLoadPath = jest.fn().mockReturnValue(false);
-
-    const result = await loadSkillFromFile(filePath, { allowLoadPath });
-
-    expect(result).toBeNull();
-    expect(allowLoadPath.mock.calls).toEqual([[filePath]]);
-  });
-
-  it('should load a file that allowLoadPath accepts', async () => {
-    const filePath = writeSkillMd(dir, 'accepted.skill.md', '---\nname: accepted\ntriggers: [accepted]\n---\n');
-    const allowLoadPath = jest.fn().mockReturnValue(true);
-
-    const result = await loadSkillFromFile(filePath, { allowLoadPath });
-
-    expect(result?.metadata.name).toBe('accepted');
-    expect(allowLoadPath.mock.calls).toEqual([[filePath]]);
+    expect(await reloading).toBeNull();
+    expect(getSkillRegistry().getFile('moved-skill')).toBe(moved);
+    warnSpy.mockRestore();
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });
 
@@ -807,6 +804,21 @@ describe('unloadSkill', () => {
     expect(getSkillRegistry().has('unload-throws')).toBe(false);
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
+  });
+
+  it('should leave a skill that another file registered while onUnload() was pending', async () => {
+    let finishUnload: () => void = () => undefined;
+    const pending = new Promise<void>((resolve) => {
+      finishUnload = resolve;
+    });
+    createRegisteredSkillFile('moved-skill', '/fake/old/moved.skill.md', { onUnload: () => pending });
+
+    const unloading = unloadSkill('moved-skill');
+    const moved = createRegisteredSkillFile('moved-skill', '/fake/new/moved.skill.md');
+    finishUnload();
+
+    expect(await unloading).toBe(false);
+    expect(getSkillRegistry().getFile('moved-skill')).toBe(moved);
   });
 
   it('should not call onUnload when skill has no onUnload hook', async () => {

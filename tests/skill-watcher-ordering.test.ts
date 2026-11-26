@@ -1,13 +1,12 @@
 /**
  * Ordering tests for SkillWatcher: what happens when a file event arrives
- * while an earlier load of the same file is still running.
+ * while an earlier load of the same file is still running, and which files
+ * reach the loader at all.
  *
- * A load takes time when the skill has an asynchronous onLoad(). Jest cannot
- * import() a JavaScript skill, and a .skill.md skill has no onLoad(), so
- * reloadSkill is replaced here by a version that does the real load and then
- * waits at the point where onLoad() would be pending. Files, chokidar events
- * and the registry are real. scripts/smoke-skill-watcher.js runs the same
- * case against the build with a real onLoad().
+ * A load takes time when the version it replaces has an asynchronous
+ * onUnload(). A .skill.md skill has no hooks of its own, so reloadSkill is
+ * replaced here by a version that does the real load and then waits before
+ * it registers the skill. Files, chokidar events and the registry are real.
  */
 
 import * as fs from 'fs';
@@ -19,11 +18,16 @@ import * as loader from '../src/skills/loader';
 
 jest.mock('../src/skills/loader', () => {
   const actual = jest.requireActual('../src/skills/loader');
-  return { ...actual, reloadSkill: jest.fn(actual.reloadSkill) };
+  return {
+    ...actual,
+    reloadSkill: jest.fn(actual.reloadSkill),
+    unloadSkill: jest.fn(actual.unloadSkill),
+  };
 });
 
 const actualLoader = jest.requireActual<typeof loader>('../src/skills/loader');
 const reloadSkillMock = loader.reloadSkill as jest.MockedFunction<typeof loader.reloadSkill>;
+const unloadSkillMock = loader.unloadSkill as jest.MockedFunction<typeof loader.unloadSkill>;
 
 const EVENT_TIMEOUT_MS = 10000;
 const POLL_MS = 25;
@@ -60,19 +64,19 @@ describe('SkillWatcher ordering of events for one file', () => {
     seen.filter((e) => e.event === event).map((e) => e.name);
 
   /**
-   * Make the next load of `slowFile` wait, as a pending onLoad() would: the
-   * file has been read, the skill is not registered yet.
+   * Make the next load of `slowFile` wait: the file has been read, the skill
+   * is not registered yet.
    */
   function holdNextLoadOf(slowFile: string): void {
     const released = new Promise<void>((resolve) => {
       releaseLoad = resolve;
     });
-    reloadSkillMock.mockImplementation(async (skillPath, options) => {
+    reloadSkillMock.mockImplementation(async (skillPath) => {
       if (skillPath !== slowFile || slowLoadsStarted > 0) {
-        return actualLoader.reloadSkill(skillPath, options);
+        return actualLoader.reloadSkill(skillPath);
       }
       slowLoadsStarted += 1;
-      const skillFile = await actualLoader.loadSkillFromFile(skillPath, options);
+      const skillFile = await actualLoader.loadSkillFromFile(skillPath);
       await released;
       if (skillFile) getSkillRegistry().register(skillFile);
       return skillFile;
@@ -98,6 +102,7 @@ describe('SkillWatcher ordering of events for one file', () => {
     slowLoadsStarted = 0;
     reloadSkillMock.mockImplementation(actualLoader.reloadSkill);
     reloadSkillMock.mockClear();
+    unloadSkillMock.mockClear();
     skillsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'titan-skill-order-'));
     warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     watcher = new SkillWatcher({ skillsDir, debounceMs: 20 });
@@ -184,5 +189,39 @@ describe('SkillWatcher ordering of events for one file', () => {
 
     expect(reloadSkillMock.mock.calls.length).toBe(callsBefore);
     expect(getSkillRegistry().has('late-skill')).toBe(false);
+  }, 30000);
+
+  it('hands only .skill.md files to the loader, whatever file an event names', async () => {
+    // Called directly, so the result does not depend on what chokidar reports.
+    const handlers = watcher as unknown as {
+      handleFileChange(event: 'add' | 'change', file: string): void;
+      handleFileUnlink(file: string): void;
+    };
+    const inDir = (name: string): string => path.join(skillsDir, name);
+    const others = ['plain.js', 'source.ts', 'named.skill.js', 'named.skill.ts', 'notes.md'].map(inDir);
+    const skillFile = writeSkillFile(skillsDir, 'only-skill');
+    // A code skill that something else registered from one of these files.
+    const codeSkill = { ...(await actualLoader.loadSkillFromFile(skillFile))! };
+    codeSkill.path = inDir('plain.js');
+    codeSkill.metadata = { ...codeSkill.metadata, name: 'code-skill' };
+    getSkillRegistry().register(codeSkill);
+    const loadedPaths = (): string[] => reloadSkillMock.mock.calls.map(([skillPath]) => skillPath);
+
+    // The timers of the earlier calls run before the timer of the last one.
+    for (const file of others) {
+      fs.writeFileSync(file, 'module.exports = {};\n');
+      handlers.handleFileChange('add', file);
+      handlers.handleFileChange('change', file);
+    }
+    handlers.handleFileChange('change', skillFile);
+    await waitFor(() => loadedPaths().includes(skillFile), 'the load of only-skill');
+    for (const file of others) handlers.handleFileUnlink(file);
+    handlers.handleFileUnlink(skillFile);
+    await waitFor(() => names('unloaded').includes('only-skill'), "'unloaded' for only-skill");
+
+    expect(loadedPaths().filter((file) => others.includes(file))).toEqual([]);
+    expect(unloadSkillMock.mock.calls.map(([name]) => name)).not.toContain('code-skill');
+    expect(getSkillRegistry().has('code-skill')).toBe(true);
+    expect(names('error')).toEqual([]);
   }, 30000);
 });

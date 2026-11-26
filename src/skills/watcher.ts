@@ -1,6 +1,6 @@
 /**
  * Titan Memory Skill Watcher
- * File watcher for hot-reload of skills using chokidar
+ * File watcher for hot-reload of .skill.md skills using chokidar
  */
 
 import { watch, FSWatcher } from 'chokidar';
@@ -8,7 +8,13 @@ import fs from 'fs';
 import path from 'path';
 import { reloadSkill, unloadSkill, getDefaultSkillsDir } from './loader.js';
 import { getSkillRegistry } from './registry.js';
-import { createWatchFilter, crossesSymlink, PathKind, WatchFilter } from './watch-filter.js';
+import {
+  createWatchFilter,
+  crossesSymlink,
+  isMarkdownSkillFile,
+  PathKind,
+  WatchFilter,
+} from './watch-filter.js';
 // SkillEvent and SkillEventListener imported for type reference only
 
 export interface SkillWatcherOptions {
@@ -18,7 +24,9 @@ export interface SkillWatcherOptions {
   debounceMs?: number;
   /**
    * Globs for the files to report, relative to skillsDir
-   * (default: any .ts, .js or .skill.md file at any depth).
+   * (default: any .skill.md file at any depth). They can narrow that set
+   * and cannot widen it: a file that is not a .skill.md file is never
+   * reported, also when a pattern matches it.
    * See globToRegExp in watch-filter.ts for the supported syntax.
    */
   patterns?: string[];
@@ -39,7 +47,13 @@ const FILE_KIND: PathKind = { isFile: () => true };
 
 /**
  * Skill Watcher
- * Watches skill directories and hot-reloads on changes
+ * Watches a skills directory and hot-reloads the .skill.md files in it.
+ *
+ * Code skills (.js and .ts files) are not hot-reloaded. The watcher never
+ * imports a file, and the add, change or delete of a code file loads,
+ * reloads and unloads nothing. Code skills are loaded by
+ * loadSkillsFromDirectory() or reloadSkill(); after an edit they need a
+ * call to reloadSkill() or a restart.
  */
 export class SkillWatcher {
   private watcher: FSWatcher | null = null;
@@ -57,18 +71,23 @@ export class SkillWatcher {
   constructor(options: SkillWatcherOptions = {}) {
     this.skillsDir = options.skillsDir || getDefaultSkillsDir();
     this.debounceMs = options.debounceMs ?? 500;
-    this.patterns = options.patterns || ['**/*.ts', '**/*.js', '**/*.skill.md'];
+    this.patterns = options.patterns || ['**/*.skill.md'];
     this.ignored = options.ignored || [
       '**/node_modules/**',
       '**/.disabled/**',
       '**/dist/**',
       '**/*.d.ts',
     ];
-    this.shouldSkip = createWatchFilter({
+    const isExcludedByOptions = createWatchFilter({
       root: this.skillsDir,
       patterns: this.patterns,
       ignored: this.ignored,
     });
+    // The one place that decides which files the watcher handles. chokidar
+    // asks it, and so do the event handlers before they queue anything.
+    this.shouldSkip = (candidatePath, stats) =>
+      isExcludedByOptions(candidatePath, stats) ||
+      (stats?.isFile() === true && !isMarkdownSkillFile(candidatePath));
 
     if (options.autoStart) {
       this.start();
@@ -84,15 +103,14 @@ export class SkillWatcher {
    *
    * Symbolic links below the skills directory are not followed, the same as
    * in loadSkillsFromDirectory. The skills directory itself may be a link.
-   * A file is loaded only when it, and for a .ts file also the compiled .js
-   * file whose content is used, is below the skills directory and not
-   * behind a link. Otherwise nothing is read and an 'error' event names the
-   * path. So a .ts file whose compiled file is in a dist directory outside
-   * the skills directory is not hot-reloaded.
+   * A .skill.md file that is behind a link when its event is handled is not
+   * read: an 'error' event names it, and a skill loaded from that path
+   * earlier is unloaded. See crossesSymlink for what that check covers.
    *
    * Loads and unloads of one file run one after the other, in the order
-   * their file events arrived, so a file deleted while its load is still
-   * running (a slow onLoad()) ends up unloaded.
+   * their file events arrived, so a file deleted while its reload is still
+   * running (a slow onUnload() of the version being replaced) ends up
+   * unloaded.
    */
   start(): void {
     if (this.isRunning) {
@@ -246,17 +264,28 @@ export class SkillWatcher {
 
   /** Load or reload the skill in `filePath` and report what happened. */
   private async loadFile(eventType: 'add' | 'change', filePath: string): Promise<void> {
-    const previousName = this.findSkillName(filePath);
-    const skillFile = await reloadSkill(filePath, {
-      allowLoadPath: (loadPath) => this.allowLoadPath(filePath, loadPath),
-    });
+    if (crossesSymlink(this.skillsDir, filePath)) {
+      // Deleted since the event, or not a plain file below skillsDir.
+      if (fs.existsSync(filePath)) {
+        const reason = `${filePath} is outside the skills directory or behind a symbolic link`;
+        this.emit('error', filePath, filePath, new Error(`Skill not loaded: ${reason}`));
+      }
+      await this.unloadFile(filePath);
+      return;
+    }
 
-    if (skillFile) {
-      const eventName = eventType === 'add' ? 'loaded' : 'reloaded';
-      this.emit(eventName, skillFile.metadata.name, filePath);
-    } else if (previousName) {
-      // reloadSkill unregistered the old version and the new one did not load.
+    const previousName = this.findSkillName(filePath);
+    const skillFile = await reloadSkill(filePath);
+    const newName = skillFile?.metadata.name;
+
+    // reloadSkill unregistered the old version. Its name is gone when the new
+    // version did not load or has another name, unless another file has
+    // registered a skill under that name since.
+    if (previousName && previousName !== newName && !getSkillRegistry().has(previousName)) {
       this.emit('unloaded', previousName, filePath);
+    }
+    if (newName) {
+      this.emit(eventType === 'add' ? 'loaded' : 'reloaded', newName, filePath);
     }
   }
 
@@ -266,25 +295,6 @@ export class SkillWatcher {
     if (name && (await unloadSkill(name))) {
       this.emit('unloaded', name, filePath);
     }
-  }
-
-  /**
-   * Asked by the loader about the file it is about to read or import
-   * (`loadPath`: for a .ts file its compiled file, otherwise `filePath`
-   * itself). Checked there, right before the load, and for both paths:
-   * loading a file that is outside skillsDir or behind a link would run code
-   * from outside the skills directory.
-   */
-  private allowLoadPath(filePath: string, loadPath: string): boolean {
-    const refused = [filePath, loadPath].find((candidate) =>
-      crossesSymlink(this.skillsDir, candidate)
-    );
-    if (refused === undefined) {
-      return true;
-    }
-    const reason = `${refused} is outside the skills directory or behind a symbolic link`;
-    this.emit('error', filePath, filePath, new Error(`Skill not loaded: ${reason}`));
-    return false;
   }
 
   /** Name of the registered skill that was loaded from `filePath`. */

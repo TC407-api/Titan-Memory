@@ -165,52 +165,10 @@ function resolveSkillExport(loaded: unknown): TitanSkill | undefined {
   ) as TitanSkill | undefined;
 }
 
-export interface SkillLoadOptions {
-  /**
-   * Asked once per load, with the absolute path of the file whose content is
-   * about to be used: the file itself for a .js or .skill.md file, the
-   * compiled .js file for a .ts file. Return false to refuse it. The file is
-   * then neither read nor imported and the load returns null.
-   */
-  allowLoadPath?: (loadPath: string) => boolean;
-}
-
-/**
- * The file to import for a .ts or .js skill file: the file itself for .js,
- * the compiled version in dist/skills or next to it for .ts. Returns null
- * when a .ts file has no compiled version.
- */
-function selectLoadPath(absolutePath: string): string | null {
-  if (path.extname(absolutePath) !== '.ts') {
-    return absolutePath;
-  }
-
-  const jsPath = absolutePath.replace(/\.ts$/, '.js');
-  const distPath = path.normalize(
-    absolutePath.replace(/src[/\\]skills/, 'dist/skills').replace(/\.ts$/, '.js')
-  );
-
-  if (fs.existsSync(distPath)) {
-    return distPath;
-  }
-  return fs.existsSync(jsPath) ? jsPath : null;
-}
-
-function isLoadPathRefused(loadPath: string, options: SkillLoadOptions): boolean {
-  if (!options.allowLoadPath || options.allowLoadPath(loadPath)) {
-    return false;
-  }
-  console.warn(`Skill file refused, not loaded: ${loadPath}`);
-  return true;
-}
-
 /**
  * Load a skill from a file path
  */
-export async function loadSkillFromFile(
-  filePath: string,
-  options: SkillLoadOptions = {}
-): Promise<SkillFile | null> {
+export async function loadSkillFromFile(filePath: string): Promise<SkillFile | null> {
   try {
     const absolutePath = path.resolve(filePath);
 
@@ -225,13 +183,20 @@ export async function loadSkillFromFile(
     // Handle TypeScript/JavaScript files
     if (ext === '.ts' || ext === '.js') {
       // For compiled skills, we need to load the .js version
-      const loadPath = selectLoadPath(absolutePath);
-      if (loadPath === null) {
-        console.warn(`No compiled version found for ${absolutePath}`);
-        return null;
-      }
-      if (isLoadPathRefused(loadPath, options)) {
-        return null;
+      let loadPath = absolutePath;
+      if (ext === '.ts') {
+        // Look for compiled version in dist or same directory
+        const jsPath = absolutePath.replace(/\.ts$/, '.js');
+        const distPath = absolutePath.replace(/src[/\\]skills/, 'dist/skills').replace(/\.ts$/, '.js');
+
+        if (fs.existsSync(distPath)) {
+          loadPath = distPath;
+        } else if (fs.existsSync(jsPath)) {
+          loadPath = jsPath;
+        } else {
+          console.warn(`No compiled version found for ${absolutePath}`);
+          return null;
+        }
       }
 
       // Dynamic import, evaluated again on every call so hot reload sees edits
@@ -265,10 +230,6 @@ export async function loadSkillFromFile(
 
     // Handle .skill.md or .skill.ts files with frontmatter
     if (absolutePath.includes('.skill.')) {
-      if (isLoadPathRefused(absolutePath, options)) {
-        return null;
-      }
-
       const content = fs.readFileSync(absolutePath, 'utf-8');
       const { metadata: rawMetadata } = parseFrontmatter(content);
 
@@ -385,25 +346,36 @@ export async function loadSkillsFromDirectory(
 }
 
 /**
+ * Unregister `file` if the registry still holds it. After an awaited
+ * onUnload() the registry can hold another entry under the same name, for
+ * example the same skill loaded from the path its file was moved to. That
+ * entry is not this caller's to remove.
+ */
+function unregisterIfCurrent(file: SkillFile): boolean {
+  const registry = getSkillRegistry();
+  const name = file.metadata.name;
+  return registry.getFile(name) === file && registry.unregister(name);
+}
+
+/**
  * Reload a specific skill.
  *
  * The version registered for this path is unregistered first, also when the
- * new version then fails to load. A disabled skill stays disabled: the
- * registry remembers its name, and a file whose skill was disabled is
- * registered as disabled even when the edit gave the skill another name.
+ * new version then fails to load. Whether the new version is enabled is
+ * decided by the registry at the moment it is registered: a skill or file
+ * that was disabled stays disabled until enable() is called (see
+ * SkillRegistry.register), and an enable() or disable() that succeeded while
+ * a hook of this reload was still pending counts. Between the unregister
+ * and the register no skill of that name is registered, so disable() returns
+ * false there.
  */
-export async function reloadSkill(
-  skillPath: string,
-  options: SkillLoadOptions = {}
-): Promise<SkillFile | null> {
+export async function reloadSkill(skillPath: string): Promise<SkillFile | null> {
   const registry = getSkillRegistry();
-  let wasDisabled = false;
 
   // Find and unregister existing skill with this path
   for (const metadata of registry.list()) {
     const file = registry.getFile(metadata.name);
     if (file && file.path === skillPath) {
-      wasDisabled = !file.enabled;
       // Call onUnload if defined
       if (file.skill.onUnload) {
         try {
@@ -412,17 +384,14 @@ export async function reloadSkill(
           console.warn(`Error in skill onUnload for ${metadata.name}:`, error);
         }
       }
-      registry.unregister(metadata.name);
+      unregisterIfCurrent(file);
       break;
     }
   }
 
   // Load fresh
-  const skillFile = await loadSkillFromFile(skillPath, options);
+  const skillFile = await loadSkillFromFile(skillPath);
   if (skillFile) {
-    if (wasDisabled) {
-      skillFile.enabled = false;
-    }
     // Call onLoad if defined
     if (skillFile.skill.onLoad) {
       try {
@@ -438,7 +407,9 @@ export async function reloadSkill(
 }
 
 /**
- * Unload a skill by name
+ * Unload a skill by name. Returns false when no skill of that name is
+ * registered, and when another entry was registered under the name while
+ * onUnload() was pending: that entry stays.
  */
 export async function unloadSkill(name: string): Promise<boolean> {
   const registry = getSkillRegistry();
@@ -457,7 +428,7 @@ export async function unloadSkill(name: string): Promise<boolean> {
     }
   }
 
-  return registry.unregister(name);
+  return unregisterIfCurrent(file);
 }
 
 /**

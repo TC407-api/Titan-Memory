@@ -22,7 +22,6 @@ export {
   getDefaultSkillsDir,
   ensureSkillsDirectory,
 } from './loader.js';
-export type { SkillLoadOptions } from './loader.js';
 
 // Executor
 export {

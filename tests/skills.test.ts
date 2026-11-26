@@ -219,6 +219,60 @@ describe('Skill System', () => {
       expect(registry.isEnabled('other-skill')).toBe(true);
     });
 
+    // A skill file as the loader builds it for the file at `filePath`.
+    const fileAt = (filePath: string, name: string): SkillFile => ({
+      ...createSkillFile(createTestSkill(name, [name])),
+      path: filePath,
+    });
+
+    it('should keep a file disabled when it comes back with another skill name', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'first-name'));
+      registry.disable('first-name');
+      registry.unregister('first-name');
+
+      registry.register(fileAt('/skills/a.skill.md', 'second-name'));
+
+      expect(registry.isEnabled('second-name')).toBe(false);
+    });
+
+    it('should forget the old name once a disabled file has another skill name', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'first-name'));
+      registry.disable('first-name');
+      registry.unregister('first-name');
+      registry.register(fileAt('/skills/a.skill.md', 'second-name'));
+
+      expect(registry.enable('second-name')).toBe(true);
+      registry.unregister('second-name');
+      registry.register(fileAt('/skills/a.skill.md', 'second-name'));
+      registry.register(fileAt('/skills/other.skill.md', 'first-name'));
+
+      expect(registry.isEnabled('second-name')).toBe(true);
+      expect(registry.isEnabled('first-name')).toBe(true);
+    });
+
+    it('should let enable() of an unregistered name lift the disable from its file too', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'first-name'));
+      registry.disable('first-name');
+      registry.unregister('first-name');
+
+      expect(registry.enable('first-name')).toBe(false);
+      registry.register(fileAt('/skills/a.skill.md', 'second-name'));
+
+      expect(registry.isEnabled('second-name')).toBe(true);
+    });
+
+    it('should not disable another file that takes over a disabled skill name later', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'shared-name'));
+      registry.disable('shared-name');
+      registry.unregister('shared-name');
+      registry.register(fileAt('/skills/a.skill.md', 'renamed'));
+
+      registry.register(fileAt('/skills/b.skill.md', 'shared-name'));
+
+      expect(registry.isEnabled('renamed')).toBe(false);
+      expect(registry.isEnabled('shared-name')).toBe(true);
+    });
+
     it('should list all skills', () => {
       registry.register(createSkillFile(createTestSkill('list-a', ['a'])));
       registry.register(createSkillFile(createTestSkill('list-b', ['b'])));

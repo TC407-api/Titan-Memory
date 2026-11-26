@@ -234,70 +234,71 @@ describe('SkillWatcher file events (end to end)', () => {
     expect(getSkillRegistry().has('added-behind-dir-link')).toBe(false);
   }, 30000);
 
-  it('refuses a compiled file that is reached through a linked dist directory', async () => {
-    // For a .ts file the loader imports the compiled file, which is another
-    // path: <project>/dist/skills/x.js for <project>/src/skills/x.ts.
+  it('refuses a file behind a link even when a file event names it', async () => {
+    // The filter keeps chokidar out of linked directories. The same check runs
+    // again when an event is handled, in case one arrives anyway.
+    const outside = path.join(tempRoot, 'outside');
     skillsDir = path.join(tempRoot, 'skills');
-    const outsideDist = path.join(tempRoot, 'outside-dist');
-    writePlainFile(path.join(outsideDist, 'skills'), 'x.js', 'module.exports = {};\n');
-    startWatcher();
+    writeSkillFile(outside, 'behind-link');
+    const started = startWatcher();
     await primeWatcher();
+    expect(tryLink(outside, path.join(skillsDir, 'linked'), 'dir')).toBe(true);
+    const linkedFile = path.join(skillsDir, 'linked', 'behind-link.skill.md');
 
-    const project = path.join(skillsDir, 'project');
-    fs.mkdirSync(path.join(project, 'src', 'skills'), { recursive: true });
-    expect(tryLink(outsideDist, path.join(project, 'dist'), 'dir')).toBe(true);
-    const source = writePlainFile(path.join(project, 'src', 'skills'), 'x.ts');
+    const handlers = started as unknown as { loadFile(event: 'add', file: string): Promise<void> };
+    await handlers.loadFile('add', linkedFile);
 
-    await waitFor(() => errorsFor(source).length > 0, "'error' for x.ts");
-    expect(errorsFor(source)[0]).toContain(path.join(project, 'dist', 'skills', 'x.js'));
-    expect(errorsFor(source)[0]).toContain('symbolic link');
-    // No import was tried: under Jest a tried import fails and is logged.
-    expect(errorSpy).not.toHaveBeenCalled();
+    expect(errorsFor(linkedFile)).toHaveLength(1);
+    expect(errorsFor(linkedFile)[0]).toContain('symbolic link');
+    expect(getSkillRegistry().has('behind-link')).toBe(false);
   }, 30000);
 
-  it('refuses a compiled sibling file that is a symbolic link', async () => {
-    skillsDir = path.join(tempRoot, 'skills');
-    const target = writePlainFile(
-      path.join(tempRoot, 'elsewhere'),
-      'y.js',
-      'module.exports = {};\n'
-    );
-    startWatcher();
-    await primeWatcher();
+  describe.each([
+    ['the default patterns', undefined],
+    ['patterns that name code files', ['**/*.js', '**/*.ts', '**/*.skill.md']],
+  ])('code files with %s', (_label, patterns) => {
+    it('are never loaded, reloaded or unloaded', async () => {
+      const codeFiles = ['plain.js', 'source.ts', 'named.skill.js', 'named.skill.ts'];
+      startWatcher(patterns ? { patterns } : {});
+      await primeWatcher();
+      // A code skill that something else registered from a file in this directory.
+      const registered = path.join(skillsDir, 'plain.js');
+      getSkillRegistry().register({
+        path: registered,
+        metadata: { name: 'code-skill', version: '1.0.0', description: '', triggers: ['code'] },
+        skill: {
+          metadata: { name: 'code-skill', version: '1.0.0', description: '', triggers: ['code'] },
+          execute: async () => ({ success: true }),
+        },
+        loadedAt: new Date(),
+        lastModified: new Date(),
+        enabled: true,
+      });
 
-    const linked = tryLink(target, path.join(skillsDir, 'y.js'), 'file');
-    if (!linked) {
-      // Only Windows without Developer Mode may refuse a file link.
-      expect(process.platform).toBe('win32');
-      return;
-    }
-    await sleep(SETTLE_MS);
-    const source = writePlainFile(skillsDir, 'y.ts');
+      for (const name of codeFiles) writePlainFile(skillsDir, name, 'module.exports = {};\n');
+      const kept = writeSkillFile(skillsDir, 'kept-skill');
+      await waitFor(() => names('loaded').includes('kept-skill'), "'loaded' for kept-skill");
+      for (const name of codeFiles) writePlainFile(skillsDir, name, 'module.exports = { edited: true };\n');
+      writeSkillFile(skillsDir, 'kept-skill', 'a longer body than before');
+      await waitFor(() => names('reloaded').includes('kept-skill'), "'reloaded' for kept-skill");
+      for (const name of codeFiles) fs.rmSync(path.join(skillsDir, name));
+      fs.rmSync(kept);
+      await waitFor(() => names('unloaded').includes('kept-skill'), "'unloaded' for kept-skill");
 
-    await waitFor(() => errorsFor(source).length > 0, "'error' for y.ts");
-    expect(errorsFor(source)[0]).toContain(path.join(skillsDir, 'y.js'));
-    expect(errorSpy).not.toHaveBeenCalled();
-  }, 30000);
-
-  it('refuses a compiled file that is outside the skills directory', async () => {
-    // With a skills directory named src/skills, the compiled file the loader
-    // picks is in the dist/skills directory next to it, outside the watched one.
-    skillsDir = path.join(tempRoot, 'src', 'skills');
-    const compiled = writePlainFile(
-      path.join(tempRoot, 'dist', 'skills'),
-      'z.js',
-      'module.exports = {};\n'
-    );
-    startWatcher();
-    await primeWatcher();
-
-    const source = writePlainFile(skillsDir, 'z.ts');
-
-    await waitFor(() => errorsFor(source).length > 0, "'error' for z.ts");
-    expect(errorsFor(source)[0]).toContain(compiled);
-    expect(errorsFor(source)[0]).toContain('outside the skills directory');
-    expect(errorSpy).not.toHaveBeenCalled();
-  }, 30000);
+      // Every event is about the .skill.md files: kept-skill and the probes.
+      const aboutOtherFiles = seen.filter(
+        (e) => e.name !== 'kept-skill' && !e.name.startsWith('probe-')
+      );
+      expect(aboutOtherFiles).toEqual([]);
+      expect(names('error')).toEqual([]);
+      expect(getSkillRegistry().has('code-skill')).toBe(true);
+      // Under Jest a tried import() of a code file fails and is logged, and a
+      // file the loader cannot use is warned about.
+      expect(errorSpy).not.toHaveBeenCalled();
+      const warned = warnSpy.mock.calls.map((call) => String(call[0])).join('\n');
+      for (const name of codeFiles) expect(warned).not.toContain(name);
+    }, 30000);
+  });
 
   it('keeps a disabled skill disabled when its file is saved again', async () => {
     startWatcher();
@@ -330,6 +331,35 @@ describe('SkillWatcher file events (end to end)', () => {
     await waitFor(() => getSkillRegistry().has('mended-skill'), 'mended-skill registered again');
 
     expect(getSkillRegistry().isEnabled('mended-skill')).toBe(false);
+  }, 30000);
+
+  it('keeps a disabled skill disabled through a broken save and a repair under another name', async () => {
+    startWatcher();
+    await primeWatcher();
+    const file = writeSkillFile(skillsDir, 'before-name');
+    await waitFor(() => names('loaded').includes('before-name'), "'loaded' for before-name");
+    getSkillRegistry().disable('before-name');
+
+    fs.writeFileSync(file, 'saved half way through an edit\n');
+    await waitFor(() => names('unloaded').includes('before-name'), "'unloaded' for before-name");
+    fs.writeFileSync(file, '---\nname: after-name\ntriggers: [after-name]\n---\nrepaired\n');
+    await waitFor(() => getSkillRegistry().has('after-name'), 'after-name registered');
+
+    expect(getSkillRegistry().isEnabled('after-name')).toBe(false);
+  }, 30000);
+
+  it('reports the old name as unloaded when a save gives the skill another name', async () => {
+    startWatcher();
+    await primeWatcher();
+    const file = writeSkillFile(skillsDir, 'old-title');
+    await waitFor(() => names('loaded').includes('old-title'), "'loaded' for old-title");
+
+    fs.writeFileSync(file, '---\nname: new-title\ntriggers: [new-title]\n---\nrenamed\n');
+    await waitFor(() => names('reloaded').includes('new-title'), "'reloaded' for new-title");
+
+    expect(names('unloaded')).toEqual(['old-title']);
+    expect(getSkillRegistry().has('old-title')).toBe(false);
+    expect(getSkillRegistry().has('new-title')).toBe(true);
   }, 30000);
 
   it('honours custom patterns and ignored options', async () => {

@@ -124,14 +124,27 @@ export function createWatchFilter(options: WatchFilterOptions): WatchFilter {
 }
 
 /**
+ * True when the file name ends in `.skill.md`: a skill described by front
+ * matter. Loading one reads and parses text and evaluates no code. The skill
+ * watcher loads these files and no others.
+ */
+export function isMarkdownSkillFile(filePath: string): boolean {
+  return toPosixPath(filePath).split('/').pop()!.endsWith('.skill.md');
+}
+
+/**
  * True when `candidatePath` is not a path below `root` that can be reached
  * without going through a symbolic link (or a Windows junction). `root`
  * itself may be a link. A path that cannot be checked counts as crossing
  * one, so the caller leaves it alone.
  *
  * chokidar follows links by default and reports files behind them under the
- * link's path. Loading such a file would import code from outside the skills
- * directory, which loadSkillsFromDirectory never does.
+ * link's path. Loading such a file would register a skill from outside the
+ * skills directory, which loadSkillsFromDirectory never does.
+ *
+ * The answer describes the path at the time of the call. The file is opened
+ * later, by name, so this is a consistency check and not a guarantee against
+ * a process that swaps a link in between the two.
  */
 export function crossesSymlink(root: string, candidatePath: string): boolean {
   const rootPath = path.resolve(root);
