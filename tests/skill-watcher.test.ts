@@ -428,6 +428,70 @@ describe('SkillWatcher file events (end to end)', () => {
     expect(getSkillRegistry().isEnabled('off-while-stopped')).toBe(false);
   }, 30000);
 
+  it('registers nothing after a listener stops it in the middle of a load', async () => {
+    const started = startWatcher();
+    const file = await addAndWaitForLoad(skillsDir, 'before-rename');
+    // The rename unloads the old name first; this listener stops the watcher then.
+    started.on('unloaded', () => {
+      void started.stop();
+    });
+
+    fs.writeFileSync(file, '---\nname: after-rename\ntriggers: [after-rename]\n---\nrenamed\n');
+    await waitFor(() => !started.isWatching(), 'the watcher to be stopped');
+    await sleep(SETTLE_MS);
+
+    expect(getSkillRegistry().has('after-rename')).toBe(false);
+    expect(getSkillRegistry().has('before-rename')).toBe(false);
+  }, 30000);
+
+  it('leaves a registration that something else made from the same file when it is stopped', async () => {
+    const started = startWatcher();
+    const file = await addAndWaitForLoad(skillsDir, 'shared-file');
+    // Something else loads the same file again and registers its own SkillFile.
+    const replacement = await loadSkillFromFile(file);
+    getSkillRegistry().register(replacement!);
+
+    await started.stop();
+
+    expect(getSkillRegistry().getFile('shared-file')).toBe(replacement);
+    expect(names('unloaded')).toEqual([]);
+  }, 30000);
+
+  // Windows and macOS file systems ignore case by default.
+  const itWhereCaseIsIgnored =
+    process.platform === 'win32' || process.platform === 'darwin' ? it : it.skip;
+
+  itWhereCaseIsIgnored('treats two spellings of a path that differ in case as one file', async () => {
+    const file = writeSkillFile(skillsDir, 'report');
+    const otherCase = path.join(skillsDir, 'REPORT.skill.md');
+    const preloaded = await loadSkillFromFile(otherCase);
+    getSkillRegistry().register(preloaded!);
+    startWatcher();
+    await waitFor(() => names('loaded').includes('report'), "'loaded' for report");
+    expect(errorsFor(file)).toEqual([]);
+
+    fs.rmSync(file);
+    await waitFor(() => names('unloaded').includes('report'), "'unloaded' for report");
+    expect(getSkillRegistry().has('report')).toBe(false);
+  }, 30000);
+
+  it('does not read through a skills directory that has become a link since start()', async () => {
+    const otherDir = path.join(tempRoot, 'other');
+    const linkedRoot = path.join(tempRoot, 'now-a-link');
+    writeSkillFile(otherDir, 'from-other');
+    expect(tryLink(otherDir, linkedRoot, 'dir')).toBe(true);
+    // Not started: the handler is called as a queued load would call it.
+    const created = new SkillWatcher({ skillsDir: linkedRoot, debounceMs: 20 });
+    created.on('error', (name, file, error) => seen.push({ event: 'error', name, file, message: error?.message }));
+    const handlers = created as unknown as { loadFile(event: 'add', file: string): Promise<void> };
+
+    const file = path.join(linkedRoot, 'from-other.skill.md');
+    await handlers.loadFile('add', file);
+
+    expect(getSkillRegistry().has('from-other')).toBe(false);
+    expect(errorsFor(file).join('\n')).toContain('symbolic link');
+  }, 30000);
+
   describe.each([
     ['the default patterns', undefined],
     ['patterns that name code files', ['**/*.js', '**/*.ts', '**/*.skill.md']],

@@ -140,8 +140,10 @@ export function isMarkdownSkillFile(filePath: string): boolean {
 /**
  * True when `candidatePath` is not a path below `root` that can be reached
  * without going through a symbolic link (or a Windows junction). `root`
- * itself may be a link. A path that cannot be checked counts as crossing
- * one, so the caller leaves it alone.
+ * itself counts: the skill watcher refuses a skills directory that is a
+ * link, so one that is a link now was replaced after the watcher started.
+ * Links above `root` do not count. A path that cannot be checked counts as
+ * crossing one, so the caller leaves it alone.
  *
  * The skill watcher reports a link under its own path, and an event can name
  * a file below a linked directory. Loading either would register a skill
@@ -165,6 +167,9 @@ export function crossesSymlink(root: string, candidatePath: string): boolean {
 
   let currentPath = rootPath;
   try {
+    if (fs.lstatSync(rootPath).isSymbolicLink()) {
+      return true;
+    }
     for (const segment of relativePath.split(path.sep)) {
       currentPath = path.join(currentPath, segment);
       if (fs.lstatSync(currentPath).isSymbolicLink()) {

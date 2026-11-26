@@ -8,6 +8,7 @@ import fs from 'fs';
 import path from 'path';
 import { loadSkillFromFile, unloadSkill, getDefaultSkillsDir } from './loader.js';
 import { getSkillRegistry } from './registry.js';
+import type { SkillFile } from './types.js';
 import {
   createWatchFilter,
   crossesSymlink,
@@ -46,6 +47,16 @@ type WatcherCallback = (name: string, path?: string, error?: Error) => void;
 /** Stands in for fs.Stats when a path is already known to be a file. */
 const FILE_KIND: PathKind = { isFile: () => true };
 
+// Windows and macOS file systems ignore case by default: there, two
+// spellings of a path that differ only in case name the same file.
+const PATHS_IGNORE_CASE = process.platform === 'win32' || process.platform === 'darwin';
+
+/** A key that is equal for two spellings of the same file path. */
+function pathKey(filePath: string): string {
+  const resolved = path.resolve(filePath);
+  return PATHS_IGNORE_CASE ? resolved.toLowerCase() : resolved;
+}
+
 /** True when something (a file, a directory, a link, even a broken one) is at `filePath`. */
 function pathExists(filePath: string): boolean {
   try {
@@ -75,7 +86,12 @@ function pathExists(filePath: string): boolean {
  * The skills the watcher registers exist while it runs: start() loads the
  * .skill.md files that are there, and stop() unloads what the watcher
  * registered. So nothing it loaded outlives a file that was deleted or
- * replaced while it was stopped.
+ * replaced while it was stopped. A registration something else made since
+ * (from the same file, or under the same name) is left alone, and a load
+ * that is still running when stop() is called registers nothing.
+ *
+ * On Windows and macOS two spellings of a path that differ only in case
+ * count as the same file, as they do on those systems by default.
  *
  * A skill the loader builds from a .skill.md file has no onLoad() or
  * onUnload() hook, and reading the file is synchronous. So each load or
@@ -95,9 +111,12 @@ export class SkillWatcher {
   private shouldSkip: WatchFilter;
   private debounceTimers: Map<string, NodeJS.Timeout> = new Map();
   private callbacks: Map<WatcherEvent, WatcherCallback[]> = new Map();
-  // Files this watcher has registered a skill from. See stop().
-  private ownedFiles: Set<string> = new Set();
+  // What this watcher has registered, by pathKey() of the file. See stop().
+  private ownedFiles: Map<string, SkillFile> = new Map();
   private isRunning = false;
+  // Changes with every start() and stop(), so a load can tell that the run
+  // it was started in has ended.
+  private generation = 0;
 
   constructor(options: SkillWatcherOptions = {}) {
     this.skillsDir = options.skillsDir || getDefaultSkillsDir();
@@ -184,6 +203,7 @@ export class SkillWatcher {
       .on('unlink', (filePath) => this.handleFileUnlink(filePath))
       .on('error', (error) => this.emit('error', 'watcher', undefined, error as Error));
 
+    this.generation += 1;
     this.isRunning = true;
   }
 
@@ -205,6 +225,7 @@ export class SkillWatcher {
     const closing = this.watcher;
     this.watcher = null;
     this.isRunning = false;
+    this.generation += 1;
 
     // Clear all pending debounce timers
     for (const timer of this.debounceTimers.values()) {
@@ -217,18 +238,21 @@ export class SkillWatcher {
   }
 
   /**
-   * Unregister the skills still registered from the files this watcher
-   * registered them from. Synchronous: such a skill has no onUnload() hook.
+   * Unregister each skill this watcher registered that is still registered
+   * as it left it (the same SkillFile). A registration that something else
+   * has made since, from the same file or under the same name, stays.
+   * Synchronous: such a skill has no onUnload() hook.
    */
   private unloadOwnedSkills(): void {
     const registry = getSkillRegistry();
-    for (const filePath of this.ownedFiles) {
-      const name = this.findSkillName(filePath);
-      if (name && registry.unregister(name)) {
-        this.emit('unloaded', name, filePath);
+    const owned = [...this.ownedFiles.values()];
+    this.ownedFiles.clear();
+    for (const skillFile of owned) {
+      const name = skillFile.metadata.name;
+      if (registry.getFile(name) === skillFile && registry.unregister(name)) {
+        this.emit('unloaded', name, skillFile.path);
       }
     }
-    this.ownedFiles.clear();
   }
 
   /**
@@ -323,44 +347,65 @@ export class SkillWatcher {
       return;
     }
 
+    // A stop() (from a listener, say) while this load waits ends its run.
+    const generation = this.generation;
     const skillFile = await loadSkillFromFile(filePath);
+    if (generation !== this.generation) {
+      return;
+    }
     // The version registered from this file before goes when the new one did
     // not load or has another name.
     const previousName = this.findSkillName(filePath);
     if (previousName && previousName !== skillFile?.metadata.name) {
       await this.unloadFile(filePath);
     }
-    if (!skillFile) {
-      return;
+    if (skillFile && generation === this.generation) {
+      this.registerUnlessTaken(eventType, filePath, skillFile);
     }
+  }
 
-    // Checked right before the register, with no await in between.
+  /**
+   * Register `skillFile` unless its name is registered from another file.
+   * Synchronous, so nothing can register that name or stop the watcher
+   * between the check and the register.
+   */
+  private registerUnlessTaken(
+    eventType: 'add' | 'change',
+    filePath: string,
+    skillFile: SkillFile
+  ): void {
     const registry = getSkillRegistry();
     const owner = registry.getFile(skillFile.metadata.name);
-    if (owner && owner.path !== filePath) {
+    if (owner && pathKey(owner.path) !== pathKey(filePath)) {
       const reason = `the name "${skillFile.metadata.name}" is registered from ${owner.path}`;
       this.emit('error', filePath, filePath, new Error(`Skill not loaded: ${reason}`));
       return;
     }
     registry.register(skillFile);
-    this.ownedFiles.add(filePath);
+    this.ownedFiles.set(pathKey(filePath), skillFile);
     this.emit(eventType === 'add' ? 'loaded' : 'reloaded', skillFile.metadata.name, filePath);
   }
 
   /** Unload the skill that was loaded from `filePath`, if there is one. */
   private async unloadFile(filePath: string): Promise<void> {
-    this.ownedFiles.delete(filePath);
+    this.ownedFiles.delete(pathKey(filePath));
     const name = this.findSkillName(filePath);
     if (name && (await unloadSkill(name))) {
       this.emit('unloaded', name, filePath);
     }
   }
 
-  /** Name of the registered skill that was loaded from `filePath`. */
+  /**
+   * Name of the registered skill that was loaded from `filePath`, or from
+   * another spelling of it (see pathKey).
+   */
   private findSkillName(filePath: string): string | undefined {
     const registry = getSkillRegistry();
-    return registry.list().find((metadata) => registry.getFile(metadata.name)?.path === filePath)
-      ?.name;
+    const key = pathKey(filePath);
+    return registry.list().find((metadata) => {
+      const registeredPath = registry.getFile(metadata.name)?.path;
+      return registeredPath !== undefined && pathKey(registeredPath) === key;
+    })?.name;
   }
 
   /**

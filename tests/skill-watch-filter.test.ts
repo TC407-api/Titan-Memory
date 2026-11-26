@@ -272,11 +272,17 @@ describe('crossesSymlink', () => {
     expect(crossesSymlink(root, linkPath)).toBe(true);
   });
 
-  it('is false below a root that is itself a link', () => {
+  it('is true below a root that is itself a link, and false below a link further up', () => {
+    // The skill watcher refuses a linked skills directory at start(); a root
+    // that has become a link since then must not be read through.
     const linkedRoot = path.join(tempRoot, 'skills-link');
     expect(tryLink(root, linkedRoot, 'dir')).toBe(true);
+    expect(crossesSymlink(linkedRoot, path.join(linkedRoot, 'custom', 'real.skill.md'))).toBe(true);
 
-    expect(crossesSymlink(linkedRoot, path.join(linkedRoot, 'custom', 'real.skill.md'))).toBe(false);
+    const linkedParent = path.join(tempRoot, 'parent-link');
+    expect(tryLink(tempRoot, linkedParent, 'dir')).toBe(true);
+    const rootBelowLink = path.join(linkedParent, 'skills');
+    expect(crossesSymlink(rootBelowLink, path.join(rootBelowLink, 'custom', 'real.skill.md'))).toBe(false);
   });
 
   it('is true for a path outside the root, the root itself and a missing file', () => {
