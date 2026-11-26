@@ -4,9 +4,11 @@
  */
 
 import { watch, FSWatcher } from 'chokidar';
+import fs from 'fs';
 import path from 'path';
 import { reloadSkill, unloadSkill, getDefaultSkillsDir } from './loader.js';
 import { getSkillRegistry } from './registry.js';
+import { createWatchFilter, PathKind, WatchFilter } from './watch-filter.js';
 // SkillEvent and SkillEventListener imported for type reference only
 
 export interface SkillWatcherOptions {
@@ -14,9 +16,13 @@ export interface SkillWatcherOptions {
   skillsDir?: string;
   /** Debounce delay in ms (default: 500) */
   debounceMs?: number;
-  /** File patterns to watch */
+  /**
+   * Globs for the files to report, relative to skillsDir
+   * (default: any .ts, .js or .skill.md file at any depth).
+   * See globToRegExp in watch-filter.ts for the supported syntax.
+   */
   patterns?: string[];
-  /** Directories to ignore */
+  /** Globs for files and directories to skip, relative to skillsDir or absolute */
   ignored?: string[];
   /** Auto-start watching */
   autoStart?: boolean;
@@ -24,6 +30,9 @@ export interface SkillWatcherOptions {
 
 type WatcherEvent = 'loaded' | 'unloaded' | 'reloaded' | 'error';
 type WatcherCallback = (name: string, path?: string, error?: Error) => void;
+
+/** Stands in for fs.Stats when a path is already known to be a file. */
+const FILE_KIND: PathKind = { isFile: () => true };
 
 /**
  * Skill Watcher
@@ -35,6 +44,7 @@ export class SkillWatcher {
   private debounceMs: number;
   private patterns: string[];
   private ignored: string[];
+  private shouldSkip: WatchFilter;
   private debounceTimers: Map<string, NodeJS.Timeout> = new Map();
   private callbacks: Map<WatcherEvent, WatcherCallback[]> = new Map();
   private isRunning = false;
@@ -49,6 +59,11 @@ export class SkillWatcher {
       '**/dist/**',
       '**/*.d.ts',
     ];
+    this.shouldSkip = createWatchFilter({
+      root: this.skillsDir,
+      patterns: this.patterns,
+      ignored: this.ignored,
+    });
 
     if (options.autoStart) {
       this.start();
@@ -56,19 +71,24 @@ export class SkillWatcher {
   }
 
   /**
-   * Start watching for file changes
+   * Start watching for file changes.
+   *
+   * The skills directory is created when it does not exist yet: chokidar
+   * reports nothing, ever, for a path that is missing when watch() is called.
+   * Throws if the directory cannot be created.
    */
   start(): void {
     if (this.isRunning) {
       return;
     }
 
-    const watchPatterns = this.patterns.map((p) =>
-      path.join(this.skillsDir, p).replace(/\\/g, '/')
-    );
+    // chokidar 4 and later take paths, not globs. Watch the directory and
+    // let the filter pick the files (see watch-filter.ts).
+    const watchedDir = path.resolve(this.skillsDir);
+    fs.mkdirSync(watchedDir, { recursive: true });
 
-    this.watcher = watch(watchPatterns, {
-      ignored: this.ignored,
+    this.watcher = watch(watchedDir, {
+      ignored: this.shouldSkip,
       persistent: true,
       ignoreInitial: true,
       awaitWriteFinish: {
@@ -138,7 +158,12 @@ export class SkillWatcher {
   /**
    * Handle file add/change events with debouncing
    */
-  private handleFileChange(eventType: 'add' | 'change', filePath: string): void {
+  private handleFileChange(eventType: 'add' | 'change', reportedPath: string): void {
+    const filePath = path.resolve(reportedPath);
+    if (this.shouldSkip(filePath, FILE_KIND)) {
+      return;
+    }
+
     // Clear existing timer for this file
     const existing = this.debounceTimers.get(filePath);
     if (existing) {
@@ -167,7 +192,12 @@ export class SkillWatcher {
   /**
    * Handle file deletion
    */
-  private async handleFileUnlink(filePath: string): Promise<void> {
+  private async handleFileUnlink(reportedPath: string): Promise<void> {
+    const filePath = path.resolve(reportedPath);
+    if (this.shouldSkip(filePath, FILE_KIND)) {
+      return;
+    }
+
     // Clear any pending debounce timer
     const existing = this.debounceTimers.get(filePath);
     if (existing) {

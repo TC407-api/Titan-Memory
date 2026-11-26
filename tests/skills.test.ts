@@ -398,7 +398,7 @@ This is a test skill.
       expect(() => watcher.off('loaded', callback)).not.toThrow();
     });
 
-    it('should not start twice', () => {
+    it('should not start twice', async () => {
       const watchDir = path.join(testDir, 'double-start');
       fs.mkdirSync(watchDir, { recursive: true });
 
@@ -409,7 +409,7 @@ This is a test skill.
 
       expect(watcher.isWatching()).toBe(true);
 
-      watcher.stop();
+      await watcher.stop();
     });
 
     it('should return watched directory', () => {
