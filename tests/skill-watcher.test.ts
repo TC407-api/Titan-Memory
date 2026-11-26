@@ -10,6 +10,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { SkillWatcher } from '../src/skills/watcher';
 import { getSkillRegistry, resetSkillRegistry } from '../src/skills/registry';
+import { loadSkillFromFile } from '../src/skills/loader';
 
 const EVENT_TIMEOUT_MS = 10000;
 const POLL_MS = 25;
@@ -75,21 +76,10 @@ describe('SkillWatcher file events (end to end)', () => {
   const names = (event: SeenEvent['event']): string[] =>
     seen.filter((e) => e.event === event).map((e) => e.name);
 
-  /**
-   * `file` with its directory resolved through links, as the watcher reports
-   * it (it watches the directory a linked skills directory points to).
-   */
-  const resolvedPath = (file: string): string =>
-    path.join(fs.realpathSync(path.dirname(file)), path.basename(file));
-
   /** Messages of the 'error' events reported for one source file. */
   const errorsFor = (file: string): string[] =>
     seen
-      .filter(
-        (e) =>
-          e.event === 'error' &&
-          (path.resolve(e.file ?? '') === file || path.resolve(e.file ?? '') === resolvedPath(file))
-      )
+      .filter((e) => e.event === 'error' && path.resolve(e.file ?? '') === file)
       .map((e) => e.message ?? '');
 
   function startWatcher(options: { patterns?: string[]; ignored?: string[] } = {}): SkillWatcher {
@@ -136,7 +126,7 @@ describe('SkillWatcher file events (end to end)', () => {
     const file = await addAndWaitForLoad(skillsDir, 'added-skill');
 
     const hit = seen.find((e) => e.event === 'loaded' && e.name === 'added-skill');
-    expect(path.resolve(hit?.file ?? '')).toBe(resolvedPath(file));
+    expect(path.resolve(hit?.file ?? '')).toBe(file);
     expect(getSkillRegistry().has('added-skill')).toBe(true);
   }, 30000);
 
@@ -293,49 +283,58 @@ describe('SkillWatcher file events (end to end)', () => {
     }, 30000);
   });
 
-  it('watches a skills directory that is itself a link', async () => {
+  it('refuses a skills directory that is itself a link', () => {
     const realDir = path.join(tempRoot, 'real-skills');
     fs.mkdirSync(realDir);
     skillsDir = path.join(tempRoot, 'linked-skills');
     expect(tryLink(realDir, skillsDir, 'dir')).toBe(true);
-    startWatcher();
-    const file = writeSkillFile(skillsDir, 'via-linked-root');
-    await waitFor(() => names('loaded').includes('via-linked-root'), "'loaded' for via-linked-root");
+    const created = new SkillWatcher({ skillsDir, debounceMs: 20 });
 
-    // Registered under the directory the link pointed to at start().
-    const realFile = path.join(fs.realpathSync(realDir), 'via-linked-root.skill.md');
-    expect(getSkillRegistry().getFile('via-linked-root')?.path).toBe(realFile);
-    fs.rmSync(file);
-    await waitFor(() => names('unloaded').includes('via-linked-root'), "'unloaded' for via-linked-root");
-  }, 30000);
+    expect(() => created.start()).toThrow('symbolic link');
+    expect(created.isWatching()).toBe(false);
+  });
 
-  it('keeps reading the directory a linked skills directory pointed to at start()', async () => {
-    const firstDir = path.join(tempRoot, 'first');
-    const secondDir = path.join(tempRoot, 'second');
-    skillsDir = path.join(tempRoot, 'linked-skills');
-    const watchedFile = writeSkillFile(firstDir, 'from-first');
-    expect(tryLink(firstDir, skillsDir, 'dir')).toBe(true);
-    startWatcher();
-    await waitFor(() => names('loaded').includes('from-first'), "'loaded' for from-first");
+  describe('a skills directory below a linked directory', () => {
+    // The skills directory is a real directory; a directory above it is a link.
+    let linkedParent: string;
 
-    // Point the link at another directory that has a file of the same name.
-    fs.mkdirSync(secondDir);
-    fs.writeFileSync(
-      path.join(secondDir, 'from-first.skill.md'),
-      '---\nname: from-second\ntriggers: [from-second]\n---\nother tree\n'
-    );
-    fs.rmSync(skillsDir, { recursive: false, force: true });
-    expect(tryLink(secondDir, skillsDir, 'dir')).toBe(true);
-    // An edit in the watched directory is read from that directory.
-    writeSkillFile(firstDir, 'from-first', 'edited in the first directory');
-    await waitFor(() => names('reloaded').includes('from-first'), "'reloaded' for from-first");
-    await sleep(SETTLE_MS);
+    beforeEach(() => {
+      const realParent = path.join(tempRoot, 'real-parent');
+      fs.mkdirSync(path.join(realParent, 'skills'), { recursive: true });
+      linkedParent = path.join(tempRoot, 'linked-parent');
+      expect(tryLink(realParent, linkedParent, 'dir')).toBe(true);
+      skillsDir = path.join(linkedParent, 'skills');
+    });
 
-    expect(getSkillRegistry().has('from-second')).toBe(false);
-    expect(getSkillRegistry().getFile('from-first')?.path).toBe(
-      path.join(fs.realpathSync(firstDir), path.basename(watchedFile))
-    );
-  }, 30000);
+    it('reloads and unloads a skill that was loaded through the same path before start()', async () => {
+      const file = writeSkillFile(skillsDir, 'preloaded');
+      const preloaded = await loadSkillFromFile(file);
+      getSkillRegistry().register(preloaded!);
+      startWatcher();
+      // The first scan finds the file and loads it again, under the same path.
+      await waitFor(() => names('loaded').includes('preloaded'), "'loaded' for preloaded");
+
+      writeSkillFile(skillsDir, 'preloaded', 'edited after start');
+      await waitFor(() => names('reloaded').includes('preloaded'), "'reloaded' for preloaded");
+      expect(getSkillRegistry().getFile('preloaded')?.path).toBe(file);
+      expect(errorsFor(file)).toEqual([]);
+
+      fs.rmSync(file);
+      await waitFor(() => names('unloaded').includes('preloaded'), "'unloaded' for preloaded");
+      expect(getSkillRegistry().has('preloaded')).toBe(false);
+    }, 30000);
+
+    it('applies an absolute ignored glob written with that path', async () => {
+      startWatcher({ ignored: [path.join(skillsDir, 'drafts', '**')] });
+
+      writeSkillFile(path.join(skillsDir, 'drafts'), 'draft-skill');
+      await addAndWaitForLoad(skillsDir, 'kept-skill');
+      await sleep(SETTLE_MS);
+
+      expect(getSkillRegistry().has('draft-skill')).toBe(false);
+      expect(names('loaded')).toEqual(['kept-skill']);
+    }, 30000);
+  });
 
   it('does not let a .skill.md file take the name of a skill registered from another file', async () => {
     const codePath = path.join(skillsDir, 'report.js');
@@ -364,16 +363,69 @@ describe('SkillWatcher file events (end to end)', () => {
     expect(names('unloaded')).toEqual([]);
   }, 30000);
 
-  it('unloads a skill whose file was deleted while the watcher was stopped', async () => {
+  it('unloads the skills it loaded when it is stopped, and loads them again on start()', async () => {
+    const started = startWatcher();
+    await addAndWaitForLoad(skillsDir, 'while-running');
+    // Registered by something else, from a file the watcher does not handle.
+    getSkillRegistry().register({
+      path: path.join(skillsDir, 'other.js'),
+      metadata: { name: 'other-skill', version: '1.0.0', description: '', triggers: ['other'] },
+      skill: {
+        metadata: { name: 'other-skill', version: '1.0.0', description: '', triggers: ['other'] },
+        execute: async () => ({ success: true }),
+      },
+      loadedAt: new Date(),
+      lastModified: new Date(),
+      enabled: true,
+    });
+
+    const stopping = started.stop();
+    // Unloaded before stop() first waits.
+    expect(getSkillRegistry().has('while-running')).toBe(false);
+    await stopping;
+    expect(names('unloaded')).toEqual(['while-running']);
+    expect(getSkillRegistry().has('other-skill')).toBe(true);
+
+    started.start();
+    await waitFor(() => getSkillRegistry().has('while-running'), 'while-running registered again');
+  }, 30000);
+
+  it('does not keep a skill whose file was deleted while the watcher was stopped', async () => {
     const started = startWatcher();
     const file = await addAndWaitForLoad(skillsDir, 'gone-while-stopped');
     await started.stop();
 
     fs.rmSync(file);
     started.start();
+    await addAndWaitForLoad(skillsDir, 'after-restart');
 
-    await waitFor(() => names('unloaded').includes('gone-while-stopped'), "'unloaded' for gone-while-stopped");
     expect(getSkillRegistry().has('gone-while-stopped')).toBe(false);
+  }, 30000);
+
+  it('does not keep a skill whose file was replaced by a directory while the watcher was stopped', async () => {
+    const started = startWatcher();
+    const file = await addAndWaitForLoad(skillsDir, 'became-dir');
+    await started.stop();
+
+    fs.rmSync(file);
+    fs.mkdirSync(file);
+    started.start();
+    await addAndWaitForLoad(skillsDir, 'after-restart');
+    await sleep(SETTLE_MS);
+
+    expect(getSkillRegistry().has('became-dir')).toBe(false);
+  }, 30000);
+
+  it('keeps a disabled skill disabled through stop() and start()', async () => {
+    const started = startWatcher();
+    await addAndWaitForLoad(skillsDir, 'off-while-stopped');
+    expect(getSkillRegistry().disable('off-while-stopped')).toBe(true);
+    await started.stop();
+
+    started.start();
+    await waitFor(() => getSkillRegistry().has('off-while-stopped'), 'off-while-stopped registered again');
+
+    expect(getSkillRegistry().isEnabled('off-while-stopped')).toBe(false);
   }, 30000);
 
   describe.each([

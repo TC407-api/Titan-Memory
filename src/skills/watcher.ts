@@ -56,17 +56,6 @@ function pathExists(filePath: string): boolean {
   }
 }
 
-/** True when `candidatePath` is below `root` (not `root` itself). */
-function isBelow(root: string, candidatePath: string): boolean {
-  const relativePath = path.relative(root, candidatePath);
-  return (
-    relativePath !== '' &&
-    relativePath !== '..' &&
-    !relativePath.startsWith(`..${path.sep}`) &&
-    !path.isAbsolute(relativePath)
-  );
-}
-
 /**
  * Skill Watcher
  * Watches a skills directory and hot-reloads the .skill.md files in it.
@@ -83,6 +72,11 @@ function isBelow(root: string, candidatePath: string): boolean {
  * replace that skill: an 'error' event names the other file. It is loaded
  * on its next change after the name has become free.
  *
+ * The skills the watcher registers exist while it runs: start() loads the
+ * .skill.md files that are there, and stop() unloads what the watcher
+ * registered. So nothing it loaded outlives a file that was deleted or
+ * replaced while it was stopped.
+ *
  * A skill the loader builds from a .skill.md file has no onLoad() or
  * onUnload() hook, and reading the file is synchronous. So each load or
  * unload the watcher starts is finished before the next file event is
@@ -92,8 +86,8 @@ function isBelow(root: string, candidatePath: string): boolean {
 export class SkillWatcher {
   private watcher: FSWatcher | null = null;
   private skillsDir: string;
-  // The directory that is watched and read: skillsDir, with links resolved
-  // by start().
+  // skillsDir as an absolute path, spelled as given: the one spelling used
+  // for watching, filtering, reading and the registry.
   private root: string;
   private debounceMs: number;
   private patterns: string[];
@@ -101,6 +95,8 @@ export class SkillWatcher {
   private shouldSkip: WatchFilter;
   private debounceTimers: Map<string, NodeJS.Timeout> = new Map();
   private callbacks: Map<WatcherEvent, WatcherCallback[]> = new Map();
+  // Files this watcher has registered a skill from. See stop().
+  private ownedFiles: Set<string> = new Set();
   private isRunning = false;
 
   constructor(options: SkillWatcherOptions = {}) {
@@ -142,12 +138,9 @@ export class SkillWatcher {
    * Creates the skills directory when it does not exist yet, so there is
    * always a directory to watch. Throws if it cannot be created.
    *
-   * start() brings the registry in line with the directory. The .skill.md
-   * files already there are loaded, and reported as 'loaded', as the first
-   * scan finds them, so a file written just before or just after start() is
-   * not missed. When that scan is done, a .skill.md skill registered from a
-   * file below the directory that no longer exists (deleted while the
-   * watcher was stopped) is unloaded.
+   * The .skill.md files already in the directory are loaded too, and
+   * reported as 'loaded', as the first scan finds them. So a file written
+   * just before or just after start() is not missed.
    *
    * Symbolic links below the skills directory are reported under their own
    * path and never followed, so a linked directory is not walked. A
@@ -156,10 +149,9 @@ export class SkillWatcher {
    * that path earlier is unloaded. See crossesSymlink for what that check
    * covers.
    *
-   * The skills directory itself may be a link. start() resolves it, and the
-   * watcher watches and reads the directory it pointed to then, so paths in
-   * events and in the registry are below that directory. After the link is
-   * pointed elsewhere, a stop() and start() moves the watcher to the new one.
+   * The skills directory itself must not be a link: start() throws if it
+   * is. Pass the directory the link points to. A link further up the path
+   * is fine.
    */
   start(): void {
     if (this.isRunning) {
@@ -167,13 +159,15 @@ export class SkillWatcher {
     }
 
     // chokidar 4 and later take paths, not globs. Watch the directory and
-    // let the filter pick the files (see watch-filter.ts). chokidar does not
-    // follow the watched path when it is a link, so resolve it here.
-    fs.mkdirSync(path.resolve(this.skillsDir), { recursive: true });
-    this.root = fs.realpathSync(path.resolve(this.skillsDir));
-    this.shouldSkip = this.createFilter();
+    // let the filter pick the files (see watch-filter.ts).
+    fs.mkdirSync(this.root, { recursive: true });
+    if (fs.lstatSync(this.root).isSymbolicLink()) {
+      throw new Error(
+        `Skills directory ${this.root} is a symbolic link; watch the directory it points to`
+      );
+    }
 
-    const watcher = watch(this.root, {
+    this.watcher = watch(this.root, {
       ignored: this.shouldSkip,
       persistent: true,
       ignoreInitial: false,
@@ -184,16 +178,12 @@ export class SkillWatcher {
       },
     });
 
-    watcher
+    this.watcher
       .on('add', (filePath) => this.handleFileChange('add', filePath))
       .on('change', (filePath) => this.handleFileChange('change', filePath))
       .on('unlink', (filePath) => this.handleFileUnlink(filePath))
-      .on('ready', () => {
-        if (this.watcher === watcher) this.unloadMissingFiles();
-      })
       .on('error', (error) => this.emit('error', 'watcher', undefined, error as Error));
 
-    this.watcher = watcher;
     this.isRunning = true;
   }
 
@@ -201,6 +191,11 @@ export class SkillWatcher {
    * Stop watching for file changes. Loads that are still waiting for their
    * debounce are dropped, and file events that arrive from now on are
    * ignored.
+   *
+   * The skills this watcher registered are unloaded, each reported as
+   * 'unloaded', before stop() first waits: while nothing watches their
+   * files, nothing could unload them when a file goes. A skill registered by
+   * anything else stays. A start() loads the files that are there again.
    */
   async stop(): Promise<void> {
     if (!this.isRunning || !this.watcher) {
@@ -216,8 +211,24 @@ export class SkillWatcher {
       clearTimeout(timer);
     }
     this.debounceTimers.clear();
+    this.unloadOwnedSkills();
 
     await closing.close();
+  }
+
+  /**
+   * Unregister the skills still registered from the files this watcher
+   * registered them from. Synchronous: such a skill has no onUnload() hook.
+   */
+  private unloadOwnedSkills(): void {
+    const registry = getSkillRegistry();
+    for (const filePath of this.ownedFiles) {
+      const name = this.findSkillName(filePath);
+      if (name && registry.unregister(name)) {
+        this.emit('unloaded', name, filePath);
+      }
+    }
+    this.ownedFiles.clear();
   }
 
   /**
@@ -332,31 +343,13 @@ export class SkillWatcher {
       return;
     }
     registry.register(skillFile);
+    this.ownedFiles.add(filePath);
     this.emit(eventType === 'add' ? 'loaded' : 'reloaded', skillFile.metadata.name, filePath);
-  }
-
-  /**
-   * Unload the .skill.md skills registered from files below the watched
-   * directory that no longer exist. Run when the first scan is done: a file
-   * deleted while the watcher was stopped gets no event.
-   */
-  private unloadMissingFiles(): void {
-    const registry = getSkillRegistry();
-    for (const metadata of registry.list()) {
-      const filePath = registry.getFile(metadata.name)?.path;
-      if (
-        filePath !== undefined &&
-        isBelow(this.root, filePath) &&
-        !this.shouldSkip(filePath, FILE_KIND) &&
-        !pathExists(filePath)
-      ) {
-        this.runReportingErrors(filePath, () => this.unloadFile(filePath));
-      }
-    }
   }
 
   /** Unload the skill that was loaded from `filePath`, if there is one. */
   private async unloadFile(filePath: string): Promise<void> {
+    this.ownedFiles.delete(filePath);
     const name = this.findSkillName(filePath);
     if (name && (await unloadSkill(name))) {
       this.emit('unloaded', name, filePath);
