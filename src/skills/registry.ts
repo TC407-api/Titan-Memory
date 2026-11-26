@@ -21,8 +21,9 @@ export class SkillRegistry {
   private lastReloadAt?: Date;
   // Disabled skills, at most one record per file: the file and the skill
   // name it is disabled under. Kept when the skill is unregistered, so that
-  // loading its file again does not make it runnable again.
-  private disabledSkills: Array<{ name: string; path: string }> = [];
+  // loading its file again does not make it runnable again. A record without
+  // a name keeps its file disabled and no longer disables a name (see enable()).
+  private disabledSkills: Array<{ name?: string; path: string }> = [];
 
   /**
    * Register a skill.
@@ -158,15 +159,27 @@ export class SkillRegistry {
 
   /**
    * Enable a skill. Returns false when no skill of that name is registered.
-   * Either way the name, and the file it was disabled with, are no longer
-   * remembered as disabled, so a skill that is not registered right now is
-   * enabled when it is registered again.
+   *
+   * When the skill is registered, its file is no longer remembered as
+   * disabled, and neither is the name. Another file that was disabled under
+   * that name stays disabled itself, under whatever name it comes back with;
+   * only its hold on this name goes.
+   *
+   * When it is not registered, the name and the files disabled under it are
+   * no longer remembered as disabled, so the skill is enabled when it is
+   * registered again.
    */
   enable(name: string): boolean {
     const entry = this.skills.get(name);
-    this.forgetDisabledSkill(name, entry?.file.path);
-    if (!entry) return false;
+    if (!entry) {
+      this.disabledSkills = this.disabledSkills.filter((skill) => skill.name !== name);
+      return false;
+    }
     entry.file.enabled = true;
+    const enabledPath = entry.file.path;
+    this.disabledSkills = this.disabledSkills
+      .filter((skill) => skill.path !== enabledPath)
+      .map((skill) => (skill.name === name ? { path: skill.path } : skill));
     return true;
   }
 
@@ -185,13 +198,6 @@ export class SkillRegistry {
 
   private isDisabledSkill(name: string, filePath: string): boolean {
     return this.disabledSkills.some((skill) => skill.name === name || skill.path === filePath);
-  }
-
-  /** Drop what is remembered for this name and, when given, for this file. */
-  private forgetDisabledSkill(name: string, filePath?: string): void {
-    this.disabledSkills = this.disabledSkills.filter(
-      (skill) => skill.name !== name && skill.path !== filePath
-    );
   }
 
   /**

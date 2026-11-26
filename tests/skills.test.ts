@@ -289,6 +289,23 @@ describe('Skill System', () => {
       expect(registry.isEnabled('renamed')).toBe(false);
     });
 
+    it('should leave a disabled file disabled when enable() is called for another file under its name', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'report'));
+      registry.disable('report');
+      registry.unregister('report');
+      registry.register(fileAt('/skills/b.skill.md', 'report'));
+      expect(registry.isEnabled('report')).toBe(false);
+
+      // Enabled before file a comes back under another name.
+      expect(registry.enable('report')).toBe(true);
+      registry.register(fileAt('/skills/b.skill.md', 'report'));
+      expect(registry.isEnabled('report')).toBe(true);
+      registry.register(fileAt('/skills/a.skill.md', 'summary'));
+
+      expect(registry.isEnabled('summary')).toBe(false);
+      expect(registry.isEnabled('report')).toBe(true);
+    });
+
     it('should list all skills', () => {
       registry.register(createSkillFile(createTestSkill('list-a', ['a'])));
       registry.register(createSkillFile(createTestSkill('list-b', ['b'])));

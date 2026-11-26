@@ -11,6 +11,7 @@ import * as path from 'path';
 import { SkillWatcher } from '../src/skills/watcher';
 import { getSkillRegistry, resetSkillRegistry } from '../src/skills/registry';
 import { loadSkillFromFile } from '../src/skills/loader';
+import type { SkillFile } from '../src/skills/types';
 
 const EVENT_TIMEOUT_MS = 10000;
 const POLL_MS = 25;
@@ -54,6 +55,19 @@ function tryLink(target: string, linkPath: string, kind: 'dir' | 'file'): boolea
     if ((error as NodeJS.ErrnoException).code === 'EPERM') return false;
     throw error;
   }
+}
+
+/** A code skill, as something other than the watcher would register it from `filePath`. */
+function codeSkillFile(filePath: string, name: string, triggers: string[]): SkillFile {
+  const metadata = { name, version: '1.0.0', description: '', triggers };
+  return {
+    path: filePath,
+    metadata,
+    skill: { metadata, execute: async () => ({ success: true, output: 'code' }) },
+    loadedAt: new Date(),
+    lastModified: new Date(),
+    enabled: true,
+  };
 }
 
 async function waitFor(check: () => boolean, what: string): Promise<void> {
@@ -476,6 +490,87 @@ describe('SkillWatcher file events (end to end)', () => {
     } finally {
       registry.removeEventListener(stopOnLoad);
     }
+  }, 30000);
+
+  it('does not overwrite a skill that a registry listener registers under the name during a reload', async () => {
+    startWatcher();
+    const file = path.resolve(await addAndWaitForLoad(skillsDir, 'report'));
+    const registry = getSkillRegistry();
+    const codePath = path.join(skillsDir, 'report.js');
+    const code = codeSkillFile(codePath, 'report', ['code-only']);
+    let hasTakenName = false;
+    // Takes the name when the reload drops the Markdown version.
+    const takeName: Parameters<typeof registry.addEventListener>[0] = (event) => {
+      if (event.type === 'skill:unloaded' && event.name === 'report' && !hasTakenName) {
+        hasTakenName = true;
+        registry.register(code);
+      }
+    };
+    registry.addEventListener(takeName);
+    try {
+      writeSkillFile(skillsDir, 'report', 'a longer body than before');
+      await waitFor(
+        () => names('reloaded').includes('report') || errorsFor(file).length > 0,
+        "'reloaded' or an 'error' for report.skill.md"
+      );
+
+      expect(hasTakenName).toBe(true);
+      expect(registry.getFile('report')).toBe(code);
+      expect(registry.findByTrigger('code-only')).toEqual([code.skill]);
+      expect(registry.findByTrigger('report')).toEqual([]);
+      expect(names('reloaded')).toEqual([]);
+      expect(names('unloaded')).toEqual(['report']);
+      expect(errorsFor(file).join('\n')).toContain(codePath);
+    } finally {
+      registry.removeEventListener(takeName);
+    }
+  }, 30000);
+
+  it('does not report or own a load that a registry listener replaces during the register', async () => {
+    const started = startWatcher();
+    const registry = getSkillRegistry();
+    const codePath = path.join(skillsDir, 'replaced.js');
+    const code = codeSkillFile(codePath, 'replaced', ['replaced']);
+    const replaceOnLoad: Parameters<typeof registry.addEventListener>[0] = (event) => {
+      if (event.type === 'skill:loaded' && event.name === 'replaced' && event.path !== codePath) {
+        registry.register(code);
+      }
+    };
+    registry.addEventListener(replaceOnLoad);
+    try {
+      writeSkillFile(skillsDir, 'replaced');
+      await waitFor(() => registry.getFile('replaced') === code, 'the code skill to replace it');
+      await sleep(SETTLE_MS);
+      await started.stop();
+
+      expect(names('loaded')).toEqual([]);
+      expect(registry.getFile('replaced')).toBe(code);
+    } finally {
+      registry.removeEventListener(replaceOnLoad);
+    }
+  }, 30000);
+
+  it('leaves a registration that an error listener makes while it refuses a linked file', async () => {
+    const outside = path.join(tempRoot, 'outside');
+    skillsDir = path.join(tempRoot, 'skills');
+    writeSkillFile(outside, 'behind-link');
+    const started = startWatcher();
+    expect(tryLink(outside, path.join(skillsDir, 'linked'), 'dir')).toBe(true);
+    const linkedFile = path.join(skillsDir, 'linked', 'behind-link.skill.md');
+    const replacement = codeSkillFile(linkedFile, 'replacement', ['replacement']);
+    // On the refusal, stop the watcher and register something from that path.
+    started.on('error', (_name, file) => {
+      if (file === linkedFile && !getSkillRegistry().has('replacement')) {
+        void started.stop();
+        getSkillRegistry().register(replacement);
+      }
+    });
+
+    const handlers = started as unknown as { loadFile(event: 'add', file: string): Promise<void> };
+    await handlers.loadFile('add', linkedFile);
+
+    expect(errorsFor(linkedFile).join('\n')).toContain('symbolic link');
+    expect(getSkillRegistry().getFile('replacement')).toBe(replacement);
   }, 30000);
 
   it('does not read through a skills directory that has become a link since start()', async () => {

@@ -73,6 +73,12 @@ function pathExists(filePath: string): boolean {
  * replace that skill: an 'error' event names the other file. It is loaded
  * on its next change after the name has become free.
  *
+ * Listeners, the watcher's and the registry's, run during loads and
+ * unloads, and can stop the watcher or register skills. After each registry
+ * call and each event it emits, the watcher checks the run and the registry
+ * again before it changes anything, so it does not undo or overwrite what a
+ * listener registered.
+ *
  * The skills the watcher registers exist while it runs: start() loads the
  * .skill.md files that are there, and stop() unloads what the watcher
  * registered. So nothing it loaded outlives a file that was deleted or
@@ -334,12 +340,14 @@ export class SkillWatcher {
   /** Load or reload the skill in `filePath` and report what happened. */
   private async loadFile(eventType: 'add' | 'change', filePath: string): Promise<void> {
     if (crossesSymlink(this.root, filePath)) {
-      // A link now, or below one, or deleted since the event.
-      if (pathExists(filePath)) {
+      // A link now, or below one, or deleted since the event. Unloaded before
+      // the 'error' is emitted, so nothing a listener does then is undone.
+      const isPresent = pathExists(filePath);
+      await this.unloadFile(filePath);
+      if (isPresent) {
         const reason = `${filePath} is outside the skills directory or behind a symbolic link`;
         this.emit('error', filePath, filePath, new Error(`Skill not loaded: ${reason}`));
       }
-      await this.unloadFile(filePath);
       return;
     }
 
@@ -362,9 +370,13 @@ export class SkillWatcher {
 
   /**
    * Register `skillFile` unless its name is registered from another file.
-   * Synchronous, so nothing else can register that name between the check
-   * and the register. A registry listener can still stop the watcher during
-   * the register; then the skill is unregistered again and not reported.
+   *
+   * The version registered from this file under the same name is
+   * unregistered first, here, so that register() replaces nothing: when it
+   * replaces a skill, register() runs registry listeners between its own
+   * check and its update. Each registry call can run listeners, which can
+   * stop the watcher or register the name. So both are checked again after
+   * each call, and what a listener registered is left alone.
    */
   private registerUnlessTaken(
     eventType: 'add' | 'change',
@@ -374,19 +386,36 @@ export class SkillWatcher {
   ): void {
     const registry = getSkillRegistry();
     const name = skillFile.metadata.name;
+    const hasDroppedPrevious = this.dropVersionFromFile(name, filePath);
     const owner = registry.getFile(name);
-    if (owner && owner.path !== filePath) {
-      const reason = `the name "${name}" is registered from ${owner.path}`;
-      this.emit('error', filePath, filePath, new Error(`Skill not loaded: ${reason}`));
+    if (owner || generation !== this.generation) {
+      if (hasDroppedPrevious) this.emit('unloaded', name, filePath);
+      if (owner) {
+        const reason = `the name "${name}" is registered from ${owner.path}`;
+        this.emit('error', filePath, filePath, new Error(`Skill not loaded: ${reason}`));
+      }
       return;
     }
     registry.register(skillFile);
+    if (registry.getFile(name) !== skillFile) {
+      return; // A registry listener replaced or removed it during the register.
+    }
     if (generation !== this.generation) {
-      if (registry.getFile(name) === skillFile) registry.unregister(name);
+      registry.unregister(name);
       return;
     }
     this.ownedFiles.set(filePath, skillFile);
     this.emit(eventType === 'add' ? 'loaded' : 'reloaded', name, filePath);
+  }
+
+  /** Unregister the skill registered as `name` from `filePath`. True when there was one. */
+  private dropVersionFromFile(name: string, filePath: string): boolean {
+    const registry = getSkillRegistry();
+    if (registry.getFile(name)?.path !== filePath) {
+      return false;
+    }
+    this.ownedFiles.delete(filePath);
+    return registry.unregister(name);
   }
 
   /** Unload the skill that was loaded from `filePath`, if there is one. */
