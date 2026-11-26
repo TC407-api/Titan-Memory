@@ -21,6 +21,7 @@ interface SeenEvent {
   event: 'loaded' | 'reloaded' | 'unloaded' | 'error';
   name: string;
   file?: string;
+  message?: string;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -32,10 +33,10 @@ function writeSkillFile(dir: string, name: string, body = 'body'): string {
   return file;
 }
 
-function writePlainFile(dir: string, fileName: string): string {
+function writePlainFile(dir: string, fileName: string, content = 'export {};\n'): string {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, fileName);
-  fs.writeFileSync(file, 'export {};\n');
+  fs.writeFileSync(file, content);
   return file;
 }
 
@@ -70,14 +71,23 @@ describe('SkillWatcher file events (end to end)', () => {
   let watcher: SkillWatcher | null = null;
   let seen: SeenEvent[] = [];
   let warnSpy: jest.SpyInstance;
+  let errorSpy: jest.SpyInstance;
 
   const names = (event: SeenEvent['event']): string[] =>
     seen.filter((e) => e.event === event).map((e) => e.name);
 
+  /** Messages of the 'error' events reported for one source file. */
+  const errorsFor = (file: string): string[] =>
+    seen
+      .filter((e) => e.event === 'error' && path.resolve(e.file ?? '') === file)
+      .map((e) => e.message ?? '');
+
   function startWatcher(options: { patterns?: string[]; ignored?: string[] } = {}): SkillWatcher {
     const created = new SkillWatcher({ skillsDir, debounceMs: 20, ...options });
     for (const event of ['loaded', 'reloaded', 'unloaded', 'error'] as const) {
-      created.on(event, (name, file) => seen.push({ event, name, file }));
+      created.on(event, (name, file, error) =>
+        seen.push({ event, name, file, message: error?.message })
+      );
     }
     created.start();
     watcher = created;
@@ -112,6 +122,7 @@ describe('SkillWatcher file events (end to end)', () => {
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'titan-skill-watcher-'));
     skillsDir = tempRoot;
     warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
   });
 
   afterEach(async () => {
@@ -120,6 +131,7 @@ describe('SkillWatcher file events (end to end)', () => {
       watcher = null;
     }
     warnSpy.mockRestore();
+    errorSpy.mockRestore();
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
 
@@ -220,6 +232,104 @@ describe('SkillWatcher file events (end to end)', () => {
     expect(getSkillRegistry().has('behind-dir-link')).toBe(false);
     expect(getSkillRegistry().has('behind-file-link')).toBe(false);
     expect(getSkillRegistry().has('added-behind-dir-link')).toBe(false);
+  }, 30000);
+
+  it('refuses a compiled file that is reached through a linked dist directory', async () => {
+    // For a .ts file the loader imports the compiled file, which is another
+    // path: <project>/dist/skills/x.js for <project>/src/skills/x.ts.
+    skillsDir = path.join(tempRoot, 'skills');
+    const outsideDist = path.join(tempRoot, 'outside-dist');
+    writePlainFile(path.join(outsideDist, 'skills'), 'x.js', 'module.exports = {};\n');
+    startWatcher();
+    await primeWatcher();
+
+    const project = path.join(skillsDir, 'project');
+    fs.mkdirSync(path.join(project, 'src', 'skills'), { recursive: true });
+    expect(tryLink(outsideDist, path.join(project, 'dist'), 'dir')).toBe(true);
+    const source = writePlainFile(path.join(project, 'src', 'skills'), 'x.ts');
+
+    await waitFor(() => errorsFor(source).length > 0, "'error' for x.ts");
+    expect(errorsFor(source)[0]).toContain(path.join(project, 'dist', 'skills', 'x.js'));
+    expect(errorsFor(source)[0]).toContain('symbolic link');
+    // No import was tried: under Jest a tried import fails and is logged.
+    expect(errorSpy).not.toHaveBeenCalled();
+  }, 30000);
+
+  it('refuses a compiled sibling file that is a symbolic link', async () => {
+    skillsDir = path.join(tempRoot, 'skills');
+    const target = writePlainFile(
+      path.join(tempRoot, 'elsewhere'),
+      'y.js',
+      'module.exports = {};\n'
+    );
+    startWatcher();
+    await primeWatcher();
+
+    const linked = tryLink(target, path.join(skillsDir, 'y.js'), 'file');
+    if (!linked) {
+      // Only Windows without Developer Mode may refuse a file link.
+      expect(process.platform).toBe('win32');
+      return;
+    }
+    await sleep(SETTLE_MS);
+    const source = writePlainFile(skillsDir, 'y.ts');
+
+    await waitFor(() => errorsFor(source).length > 0, "'error' for y.ts");
+    expect(errorsFor(source)[0]).toContain(path.join(skillsDir, 'y.js'));
+    expect(errorSpy).not.toHaveBeenCalled();
+  }, 30000);
+
+  it('refuses a compiled file that is outside the skills directory', async () => {
+    // With a skills directory named src/skills, the compiled file the loader
+    // picks is in the dist/skills directory next to it, outside the watched one.
+    skillsDir = path.join(tempRoot, 'src', 'skills');
+    const compiled = writePlainFile(
+      path.join(tempRoot, 'dist', 'skills'),
+      'z.js',
+      'module.exports = {};\n'
+    );
+    startWatcher();
+    await primeWatcher();
+
+    const source = writePlainFile(skillsDir, 'z.ts');
+
+    await waitFor(() => errorsFor(source).length > 0, "'error' for z.ts");
+    expect(errorsFor(source)[0]).toContain(compiled);
+    expect(errorsFor(source)[0]).toContain('outside the skills directory');
+    expect(errorSpy).not.toHaveBeenCalled();
+  }, 30000);
+
+  it('keeps a disabled skill disabled when its file is saved again', async () => {
+    startWatcher();
+    await primeWatcher();
+    writeSkillFile(skillsDir, 'quiet-skill');
+    await waitFor(() => names('loaded').includes('quiet-skill'), "'loaded' for quiet-skill");
+    expect(getSkillRegistry().disable('quiet-skill')).toBe(true);
+
+    writeSkillFile(skillsDir, 'quiet-skill', 'a longer body than before');
+    await waitFor(() => names('reloaded').includes('quiet-skill'), "'reloaded' for quiet-skill");
+
+    expect(getSkillRegistry().has('quiet-skill')).toBe(true);
+    expect(getSkillRegistry().isEnabled('quiet-skill')).toBe(false);
+    expect(getSkillRegistry().findByText('please run quiet-skill')).toBeUndefined();
+  }, 30000);
+
+  it('keeps a disabled skill disabled through a broken save and a repaired one', async () => {
+    startWatcher();
+    await primeWatcher();
+    const file = writeSkillFile(skillsDir, 'mended-skill');
+    await waitFor(() => names('loaded').includes('mended-skill'), "'loaded' for mended-skill");
+    getSkillRegistry().disable('mended-skill');
+
+    // No frontmatter: the loader cannot load this version.
+    fs.writeFileSync(file, 'saved half way through an edit\n');
+    await waitFor(() => names('unloaded').includes('mended-skill'), "'unloaded' for mended-skill");
+    expect(getSkillRegistry().has('mended-skill')).toBe(false);
+
+    writeSkillFile(skillsDir, 'mended-skill', 'repaired');
+    await waitFor(() => getSkillRegistry().has('mended-skill'), 'mended-skill registered again');
+
+    expect(getSkillRegistry().isEnabled('mended-skill')).toBe(false);
   }, 30000);
 
   it('honours custom patterns and ignored options', async () => {

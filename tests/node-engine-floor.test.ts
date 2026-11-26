@@ -7,7 +7,8 @@
  * line and from 23.6.0 on the 23 line. On an older Node the package installs
  * and loads, and the process then crashes when a database is opened. So the
  * declared range is checked against the Node-API version of the binding, not
- * only against the dependency's own `engines` entry.
+ * only against the dependency's own `engines` entry. The declared range is
+ * also checked against the minimum chokidar declares, which is higher.
  *
  * The lockfile, the README and the CI workflow each repeat the minimum, so
  * they are checked against `package.json` here as well.
@@ -140,6 +141,16 @@ describe('declared Node versions (engines.node)', () => {
   it('start at or above the minimum better-sqlite3 declares', () => {
     const sqlite = readJson<PackageManifest>('node_modules/better-sqlite3/package.json');
     const required = findLowestFloor(parseRange(sqlite.engines?.node, 'better-sqlite3'));
+
+    for (const { floor } of declared) {
+      expect({ floor, allowed: isAtLeast(floor, required) }).toEqual({ floor, allowed: true });
+    }
+  });
+
+  it('start at or above the minimum chokidar declares', () => {
+    // chokidar 6 declares ">= 22.22". The skill watcher loads it with require().
+    const chokidar = readJson<PackageManifest>('node_modules/chokidar/package.json');
+    const required = findLowestFloor(parseRange(chokidar.engines?.node, 'chokidar'));
 
     for (const { floor } of declared) {
       expect({ floor, allowed: isAtLeast(floor, required) }).toEqual({ floor, allowed: true });

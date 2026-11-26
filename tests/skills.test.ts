@@ -152,6 +152,73 @@ describe('Skill System', () => {
       expect(registry.isEnabled('toggle-skill')).toBe(true);
     });
 
+    it('should keep a disabled skill disabled when it is registered again', () => {
+      registry.register(createSkillFile(createTestSkill('sticky-skill', ['sticky'])));
+      registry.disable('sticky-skill');
+
+      // A fresh SkillFile, as the loader builds one for an edited file.
+      registry.register(createSkillFile(createTestSkill('sticky-skill', ['sticky'])));
+
+      expect(registry.isEnabled('sticky-skill')).toBe(false);
+      expect(registry.findByTrigger('sticky')).toEqual([]);
+      expect(registry.findByText('a sticky situation')).toBeUndefined();
+    });
+
+    it('should keep a disabled skill disabled after it is unregistered and registered again', () => {
+      registry.register(createSkillFile(createTestSkill('gone-skill', ['gone'])));
+      registry.disable('gone-skill');
+      registry.unregister('gone-skill');
+      expect(registry.isEnabled('gone-skill')).toBe(false);
+
+      registry.register(createSkillFile(createTestSkill('gone-skill', ['gone'])));
+
+      expect(registry.has('gone-skill')).toBe(true);
+      expect(registry.isEnabled('gone-skill')).toBe(false);
+      expect(registry.listDisabled().map((m) => m.name)).toEqual(['gone-skill']);
+    });
+
+    it('should register a skill as enabled again once enable() was called for it', () => {
+      registry.register(createSkillFile(createTestSkill('back-skill', ['back'])));
+      registry.disable('back-skill');
+      registry.enable('back-skill');
+
+      registry.register(createSkillFile(createTestSkill('back-skill', ['back'])));
+
+      expect(registry.isEnabled('back-skill')).toBe(true);
+    });
+
+    it('should let enable() lift a disable while the skill is not registered', () => {
+      registry.register(createSkillFile(createTestSkill('away-skill', ['away'])));
+      registry.disable('away-skill');
+      registry.unregister('away-skill');
+
+      expect(registry.enable('away-skill')).toBe(false);
+      registry.register(createSkillFile(createTestSkill('away-skill', ['away'])));
+
+      expect(registry.isEnabled('away-skill')).toBe(true);
+    });
+
+    it('should remember a skill that is registered in the disabled state', () => {
+      const file = createSkillFile(createTestSkill('born-off', ['born']));
+      file.enabled = false;
+      registry.register(file);
+      registry.unregister('born-off');
+
+      registry.register(createSkillFile(createTestSkill('born-off', ['born'])));
+
+      expect(registry.isEnabled('born-off')).toBe(false);
+    });
+
+    it('should not disable other skills, and should return false for an unknown name', () => {
+      registry.register(createSkillFile(createTestSkill('other-skill', ['other'])));
+
+      expect(registry.disable('never-registered')).toBe(false);
+      registry.register(createSkillFile(createTestSkill('never-registered', ['never'])));
+
+      expect(registry.isEnabled('never-registered')).toBe(true);
+      expect(registry.isEnabled('other-skill')).toBe(true);
+    });
+
     it('should list all skills', () => {
       registry.register(createSkillFile(createTestSkill('list-a', ['a'])));
       registry.register(createSkillFile(createTestSkill('list-b', ['b'])));

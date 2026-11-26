@@ -49,6 +49,8 @@ export class SkillWatcher {
   private ignored: string[];
   private shouldSkip: WatchFilter;
   private debounceTimers: Map<string, NodeJS.Timeout> = new Map();
+  // The last load or unload queued for each file. See enqueue().
+  private operations: Map<string, Promise<void>> = new Map();
   private callbacks: Map<WatcherEvent, WatcherCallback[]> = new Map();
   private isRunning = false;
 
@@ -82,6 +84,15 @@ export class SkillWatcher {
    *
    * Symbolic links below the skills directory are not followed, the same as
    * in loadSkillsFromDirectory. The skills directory itself may be a link.
+   * A file is loaded only when it, and for a .ts file also the compiled .js
+   * file whose content is used, is below the skills directory and not
+   * behind a link. Otherwise nothing is read and an 'error' event names the
+   * path. So a .ts file whose compiled file is in a dist directory outside
+   * the skills directory is not hot-reloaded.
+   *
+   * Loads and unloads of one file run one after the other, in the order
+   * their file events arrived, so a file deleted while its load is still
+   * running (a slow onLoad()) ends up unloaded.
    */
   start(): void {
     if (this.isRunning) {
@@ -113,12 +124,21 @@ export class SkillWatcher {
   }
 
   /**
-   * Stop watching for file changes
+   * Stop watching for file changes.
+   *
+   * File events that arrive from now on are ignored. stop() does not wait
+   * for skill code: a load or unload that was already queued for an earlier
+   * event still runs to its end, and still reports its event, after stop()
+   * has returned.
    */
   async stop(): Promise<void> {
     if (!this.isRunning || !this.watcher) {
       return;
     }
+
+    const closing = this.watcher;
+    this.watcher = null;
+    this.isRunning = false;
 
     // Clear all pending debounce timers
     for (const timer of this.debounceTimers.values()) {
@@ -126,9 +146,7 @@ export class SkillWatcher {
     }
     this.debounceTimers.clear();
 
-    await this.watcher.close();
-    this.watcher = null;
-    this.isRunning = false;
+    await closing.close();
   }
 
   /**
@@ -166,7 +184,7 @@ export class SkillWatcher {
    */
   private handleFileChange(eventType: 'add' | 'change', reportedPath: string): void {
     const filePath = path.resolve(reportedPath);
-    if (this.shouldSkip(filePath, FILE_KIND)) {
+    if (!this.isRunning || this.shouldSkip(filePath, FILE_KIND)) {
       return;
     }
 
@@ -177,25 +195,9 @@ export class SkillWatcher {
     }
 
     // Set new debounced timer
-    const timer = setTimeout(async () => {
+    const timer = setTimeout(() => {
       this.debounceTimers.delete(filePath);
-
-      // Checked here, right before the load, and not only in the filter:
-      // loading a file behind a link would import code from outside skillsDir.
-      if (crossesSymlink(this.skillsDir, filePath)) {
-        return;
-      }
-
-      try {
-        const skillFile = await reloadSkill(filePath);
-
-        if (skillFile) {
-          const eventName = eventType === 'add' ? 'loaded' : 'reloaded';
-          this.emit(eventName, skillFile.metadata.name, filePath);
-        }
-      } catch (error) {
-        this.emit('error', filePath, filePath, error as Error);
-      }
+      this.enqueue(filePath, () => this.loadFile(eventType, filePath));
     }, this.debounceMs);
 
     this.debounceTimers.set(filePath, timer);
@@ -204,9 +206,9 @@ export class SkillWatcher {
   /**
    * Handle file deletion
    */
-  private async handleFileUnlink(reportedPath: string): Promise<void> {
+  private handleFileUnlink(reportedPath: string): void {
     const filePath = path.resolve(reportedPath);
-    if (this.shouldSkip(filePath, FILE_KIND)) {
+    if (!this.isRunning || this.shouldSkip(filePath, FILE_KIND)) {
       return;
     }
 
@@ -217,20 +219,79 @@ export class SkillWatcher {
       this.debounceTimers.delete(filePath);
     }
 
-    // Find skill by path and unload
-    const registry = getSkillRegistry();
-    for (const metadata of registry.list()) {
-      const file = registry.getFile(metadata.name);
-      if (file && file.path === filePath) {
-        try {
-          await unloadSkill(metadata.name);
-          this.emit('unloaded', metadata.name, filePath);
-        } catch (error) {
-          this.emit('error', metadata.name, filePath, error as Error);
-        }
-        break;
+    this.enqueue(filePath, () => this.unloadFile(filePath));
+  }
+
+  /**
+   * Run `operation` once every operation queued earlier for the same file
+   * has finished. Without this a delete that arrives while a load is still
+   * running finds nothing to unload, and the load then registers a skill
+   * whose file is gone. An onLoad() or onUnload() that never settles holds
+   * back the later operations for its own file only.
+   */
+  private enqueue(filePath: string, operation: () => Promise<void>): void {
+    const earlier = this.operations.get(filePath) ?? Promise.resolve();
+    const current: Promise<void> = earlier.then(async () => {
+      try {
+        await operation();
+      } catch (error) {
+        this.emit('error', filePath, filePath, error as Error);
       }
+      if (this.operations.get(filePath) === current) {
+        this.operations.delete(filePath);
+      }
+    });
+    this.operations.set(filePath, current);
+  }
+
+  /** Load or reload the skill in `filePath` and report what happened. */
+  private async loadFile(eventType: 'add' | 'change', filePath: string): Promise<void> {
+    const previousName = this.findSkillName(filePath);
+    const skillFile = await reloadSkill(filePath, {
+      allowLoadPath: (loadPath) => this.allowLoadPath(filePath, loadPath),
+    });
+
+    if (skillFile) {
+      const eventName = eventType === 'add' ? 'loaded' : 'reloaded';
+      this.emit(eventName, skillFile.metadata.name, filePath);
+    } else if (previousName) {
+      // reloadSkill unregistered the old version and the new one did not load.
+      this.emit('unloaded', previousName, filePath);
     }
+  }
+
+  /** Unload the skill that was loaded from `filePath`, if there is one. */
+  private async unloadFile(filePath: string): Promise<void> {
+    const name = this.findSkillName(filePath);
+    if (name && (await unloadSkill(name))) {
+      this.emit('unloaded', name, filePath);
+    }
+  }
+
+  /**
+   * Asked by the loader about the file it is about to read or import
+   * (`loadPath`: for a .ts file its compiled file, otherwise `filePath`
+   * itself). Checked there, right before the load, and for both paths:
+   * loading a file that is outside skillsDir or behind a link would run code
+   * from outside the skills directory.
+   */
+  private allowLoadPath(filePath: string, loadPath: string): boolean {
+    const refused = [filePath, loadPath].find((candidate) =>
+      crossesSymlink(this.skillsDir, candidate)
+    );
+    if (refused === undefined) {
+      return true;
+    }
+    const reason = `${refused} is outside the skills directory or behind a symbolic link`;
+    this.emit('error', filePath, filePath, new Error(`Skill not loaded: ${reason}`));
+    return false;
+  }
+
+  /** Name of the registered skill that was loaded from `filePath`. */
+  private findSkillName(filePath: string): string | undefined {
+    const registry = getSkillRegistry();
+    return registry.list().find((metadata) => registry.getFile(metadata.name)?.path === filePath)
+      ?.name;
   }
 
   /**
