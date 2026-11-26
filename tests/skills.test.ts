@@ -306,6 +306,22 @@ describe('Skill System', () => {
       expect(registry.isEnabled('report')).toBe(true);
     });
 
+    it('should keep an enable() that a listener calls while register() replaces a disabled skill', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'report'));
+      registry.disable('report');
+      const enableOnUnload: Parameters<typeof registry.addEventListener>[0] = (event) => {
+        if (event.type === 'skill:unloaded' && event.name === 'report') registry.enable('report');
+      };
+      registry.addEventListener(enableOnUnload);
+      try {
+        registry.register(fileAt('/skills/a.skill.md', 'report'));
+      } finally {
+        registry.removeEventListener(enableOnUnload);
+      }
+
+      expect(registry.isEnabled('report')).toBe(true);
+    });
+
     it('should list all skills', () => {
       registry.register(createSkillFile(createTestSkill('list-a', ['a'])));
       registry.register(createSkillFile(createTestSkill('list-b', ['b'])));

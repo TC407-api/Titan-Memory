@@ -44,6 +44,16 @@ export interface SkillWatcherOptions {
 type WatcherEvent = 'loaded' | 'unloaded' | 'reloaded' | 'error';
 type WatcherCallback = (name: string, path?: string, error?: Error) => void;
 
+/** One load of a file, as it stood before any listener ran. */
+interface FileLoad {
+  eventType: 'add' | 'change';
+  filePath: string;
+  /** The run the load was started in. */
+  generation: number;
+  /** What was registered from this file under the new name, if anything. */
+  replaced?: SkillFile;
+}
+
 /** Stands in for fs.Stats when a path is already known to be a file. */
 const FILE_KIND: PathKind = { isFile: () => true };
 
@@ -111,7 +121,9 @@ export class SkillWatcher {
   private patterns: string[];
   private ignored: string[];
   private shouldSkip: WatchFilter;
-  private debounceTimers: Map<string, NodeJS.Timeout> = new Map();
+  // Pending loads by file path, with the event they will report.
+  private debounceTimers: Map<string, { timer: NodeJS.Timeout; eventType: 'add' | 'change' }> =
+    new Map();
   private callbacks: Map<WatcherEvent, WatcherCallback[]> = new Map();
   // What this watcher has registered, by file path. See stop().
   private ownedFiles: Map<string, SkillFile> = new Map();
@@ -230,7 +242,7 @@ export class SkillWatcher {
     this.generation += 1;
 
     // Clear all pending debounce timers
-    for (const timer of this.debounceTimers.values()) {
+    for (const { timer } of this.debounceTimers.values()) {
       clearTimeout(timer);
     }
     this.debounceTimers.clear();
@@ -296,19 +308,21 @@ export class SkillWatcher {
       return;
     }
 
-    // Clear existing timer for this file
+    // Clear existing timer for this file. A file added and then changed
+    // before its load ran is still loaded as added.
     const existing = this.debounceTimers.get(filePath);
     if (existing) {
-      clearTimeout(existing);
+      clearTimeout(existing.timer);
     }
+    const pendingType = existing?.eventType === 'add' ? 'add' : eventType;
 
     // Set new debounced timer
     const timer = setTimeout(() => {
       this.debounceTimers.delete(filePath);
-      this.runReportingErrors(filePath, () => this.loadFile(eventType, filePath));
+      this.runReportingErrors(filePath, () => this.loadFile(pendingType, filePath));
     }, this.debounceMs);
 
-    this.debounceTimers.set(filePath, timer);
+    this.debounceTimers.set(filePath, { timer, eventType: pendingType });
   }
 
   /**
@@ -323,7 +337,7 @@ export class SkillWatcher {
     // Clear any pending debounce timer
     const existing = this.debounceTimers.get(filePath);
     if (existing) {
-      clearTimeout(existing);
+      clearTimeout(existing.timer);
       this.debounceTimers.delete(filePath);
     }
 
@@ -357,6 +371,10 @@ export class SkillWatcher {
     if (generation !== this.generation) {
       return;
     }
+    // What this load may replace, taken before any listener runs: the
+    // version registered from this file under the new name.
+    const registered = skillFile ? getSkillRegistry().getFile(skillFile.metadata.name) : undefined;
+    const replaced = registered?.path === filePath ? registered : undefined;
     // The version registered from this file before goes when the new one did
     // not load or has another name.
     const previousName = this.findSkillName(filePath);
@@ -364,29 +382,26 @@ export class SkillWatcher {
       await this.unloadFile(filePath);
     }
     if (skillFile && generation === this.generation) {
-      this.registerUnlessTaken(eventType, filePath, skillFile, generation);
+      this.registerUnlessTaken(skillFile, { eventType, filePath, generation, replaced });
     }
   }
 
   /**
    * Register `skillFile` unless its name is registered from another file.
    *
-   * The version registered from this file under the same name is
-   * unregistered first, here, so that register() replaces nothing: when it
-   * replaces a skill, register() runs registry listeners between its own
-   * check and its update. Each registry call can run listeners, which can
-   * stop the watcher or register the name. So both are checked again after
-   * each call, and what a listener registered is left alone.
+   * The version this load replaces (`load.replaced`, taken before any
+   * listener ran) is unregistered first, here, so that register() replaces
+   * nothing: when it replaces a skill, register() runs registry listeners
+   * between its own check and its update. Each registry call can run
+   * listeners, which can stop the watcher or register the name, from any
+   * file. So both are checked again after each call, and what a listener
+   * registered is left alone.
    */
-  private registerUnlessTaken(
-    eventType: 'add' | 'change',
-    filePath: string,
-    skillFile: SkillFile,
-    generation: number
-  ): void {
+  private registerUnlessTaken(skillFile: SkillFile, load: FileLoad): void {
+    const { eventType, filePath, generation } = load;
     const registry = getSkillRegistry();
     const name = skillFile.metadata.name;
-    const hasDroppedPrevious = this.dropVersionFromFile(name, filePath);
+    const hasDroppedPrevious = this.dropRegistered(load.replaced);
     const owner = registry.getFile(name);
     if (owner || generation !== this.generation) {
       if (hasDroppedPrevious) this.emit('unloaded', name, filePath);
@@ -408,14 +423,14 @@ export class SkillWatcher {
     this.emit(eventType === 'add' ? 'loaded' : 'reloaded', name, filePath);
   }
 
-  /** Unregister the skill registered as `name` from `filePath`. True when there was one. */
-  private dropVersionFromFile(name: string, filePath: string): boolean {
+  /** Unregister `skillFile` if it is still the one registered under its name. True when it was. */
+  private dropRegistered(skillFile: SkillFile | undefined): boolean {
     const registry = getSkillRegistry();
-    if (registry.getFile(name)?.path !== filePath) {
+    if (!skillFile || registry.getFile(skillFile.metadata.name) !== skillFile) {
       return false;
     }
-    this.ownedFiles.delete(filePath);
-    return registry.unregister(name);
+    this.ownedFiles.delete(skillFile.path);
+    return registry.unregister(skillFile.metadata.name);
   }
 
   /** Unload the skill that was loaded from `filePath`, if there is one. */

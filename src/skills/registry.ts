@@ -42,14 +42,15 @@ export class SkillRegistry {
     const { metadata } = file;
     const name = metadata.name;
 
-    if (!file.enabled || this.isDisabledSkill(name, file.path)) {
-      file.enabled = false;
-      this.rememberDisabledSkill(name, file.path);
-    }
-
     // Unregister existing skill with same name
     if (this.skills.has(name)) {
       this.unregister(name);
+    }
+
+    // Decided after that unregister, whose listeners can call enable().
+    if (!file.enabled || this.isDisabledSkill(name, file.path)) {
+      file.enabled = false;
+      this.rememberDisabledSkill(name, file.path);
     }
 
     // Create registry entry

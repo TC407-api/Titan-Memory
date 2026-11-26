@@ -526,6 +526,37 @@ describe('SkillWatcher file events (end to end)', () => {
     }
   }, 30000);
 
+  it('does not overwrite what a registry listener registers from the same file during a rename', async () => {
+    startWatcher();
+    const file = path.resolve(await addAndWaitForLoad(skillsDir, 'first-title'));
+    const registry = getSkillRegistry();
+    const fromListener = codeSkillFile(file, 'second-title', ['listener-only']);
+    let hasRegistered = false;
+    // Registers the new name from the same file when the rename drops the old one.
+    const registerNewName: Parameters<typeof registry.addEventListener>[0] = (event) => {
+      if (event.type === 'skill:unloaded' && event.name === 'first-title' && !hasRegistered) {
+        hasRegistered = true;
+        registry.register(fromListener);
+      }
+    };
+    registry.addEventListener(registerNewName);
+    try {
+      fs.writeFileSync(file, '---\nname: second-title\ntriggers: [second-title]\n---\nrenamed\n');
+      await waitFor(
+        () => names('reloaded').includes('second-title') || errorsFor(file).length > 0,
+        "'reloaded' or an 'error' for the renamed file"
+      );
+
+      expect(hasRegistered).toBe(true);
+      expect(registry.getFile('second-title')).toBe(fromListener);
+      expect(registry.findByTrigger('listener-only')).toEqual([fromListener.skill]);
+      expect(names('reloaded')).toEqual([]);
+      expect(names('unloaded')).toEqual(['first-title']);
+    } finally {
+      registry.removeEventListener(registerNewName);
+    }
+  }, 30000);
+
   it('does not report or own a load that a registry listener replaces during the register', async () => {
     const started = startWatcher();
     const registry = getSkillRegistry();

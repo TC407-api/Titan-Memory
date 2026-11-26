@@ -92,6 +92,26 @@ describe('SkillWatcher: which file events reach the loader', () => {
     expect(getSkillRegistry().has('late-skill')).toBe(false);
   }, 30000);
 
+  it('reports a file that is added and then changed before its load runs as loaded', async () => {
+    const handlers = watcher as unknown as {
+      handleFileChange(event: 'add' | 'change', file: string): void;
+    };
+    // A file added after the first scan, so chokidar waits for the write to
+    // finish (200 ms) before it reports this one.
+    writeSkillFile(skillsDir, 'warm-up');
+    await waitFor(() => names('loaded').includes('warm-up'), "'loaded' for warm-up");
+    await sleep(SETTLE_MS);
+    seen = [];
+    const file = writeSkillFile(skillsDir, 'fresh-skill');
+    // Inside one debounce window, before chokidar reports the file itself.
+    handlers.handleFileChange('add', file);
+    handlers.handleFileChange('change', file);
+    await waitFor(() => seen.length > 0, 'the first event');
+
+    expect(seen[0]).toEqual({ event: 'loaded', name: 'fresh-skill' });
+    await sleep(SETTLE_MS);
+  }, 30000);
+
   it('hands only .skill.md files to the loader, whatever file an event names', async () => {
     // Called directly, so the result does not depend on what chokidar reports.
     const handlers = watcher as unknown as {
