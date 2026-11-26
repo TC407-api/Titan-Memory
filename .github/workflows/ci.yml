@@ -14,9 +14,10 @@ jobs:
       fail-fast: false
       matrix:
         # The first entry is the exact minimum from "engines" in package.json.
-        # The better-sqlite3 binding crashes the process on an older Node, so
-        # the suite has to run there as well as on the current 22 release.
-        node-version: ['22.14.0', '22']
+        # chokidar 6 needs Node 22.22, and the better-sqlite3 binding crashes
+        # the process on a Node older than 22.14, so the suite has to run on
+        # the minimum as well as on the current 22 release.
+        node-version: ['22.22.0', '22']
     steps:
       - uses: actions/checkout@v4
 
@@ -37,6 +38,11 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # Jest compiles chokidar (ES modules only) to CommonJS, so the tests do not
+      # show whether the built CommonJS output can require() the real package.
+      - name: Load the built watcher
+        run: node scripts/smoke-skill-watcher.js
 
       - name: Security audit
         run: npm audit --audit-level=high --omit=dev

@@ -13,17 +13,51 @@ import {
   SkillSystemStats,
 } from './types.js';
 
+/** A disable in force for a skill name (see SkillRegistry.getDisable()). */
+export interface SkillDisable {
+  /** Unique in the process, also across registries (resetSkillRegistry()). */
+  readonly id: number;
+  /** The file of the skill the disable was made for. */
+  readonly path: string;
+}
+
+// Module-wide, so a disable id never repeats in a new registry.
+let nextDisableId = 1;
+
 export class SkillRegistry {
   private skills: Map<string, SkillRegistryEntry> = new Map();
   private triggerIndex: Map<string, string[]> = new Map(); // trigger -> skill names
   private listeners: SkillEventListener[] = [];
   private executionStats: Map<string, { count: number; totalTimeMs: number }> = new Map();
   private lastReloadAt?: Date;
+  // The names that are disabled: by disable(), or by registering a SkillFile
+  // with `enabled: false`. A name stays here, also while nothing is
+  // registered under it, until enable() is called for it. Only names are
+  // kept, never files: enable() and disable() take a name, and each changes
+  // the state of that one name only. Each name maps to the disable in force
+  // (see getDisable()).
+  private disabledNames: Map<string, SkillDisable> = new Map();
 
   /**
-   * Register a skill
+   * Register a skill.
+   *
+   * The skill is registered as disabled, whatever `file.enabled` says, when
+   * its name is disabled (see isNameDisabled()). The loader builds a new
+   * SkillFile with `enabled: true` each time a file is loaded, so without
+   * this an edited or re-added file would undo a disable(). Any file
+   * registered under a disabled name is disabled, and a SkillFile that is
+   * registered with `enabled: false` disables its name.
+   *
+   * The state belongs to the name, not to the file: a file whose skill now
+   * has another name registers a skill under that name, in that name's state.
+   * (The skill watcher carries a disable over to the new name of a file it
+   * loaded; see SkillWatcher.)
+   *
+   * Returns the disable this call made: when `file.enabled` was false and
+   * the name was not disabled yet. Read before any listener runs, so a
+   * caller can tell it from a disable a listener makes during the call.
    */
-  register(file: SkillFile): void {
+  register(file: SkillFile): SkillDisable | undefined {
     const { metadata } = file;
     const name = metadata.name;
 
@@ -31,6 +65,10 @@ export class SkillRegistry {
     if (this.skills.has(name)) {
       this.unregister(name);
     }
+
+    // Decided after that unregister, whose listeners can call enable().
+    const madeDisable = file.enabled ? undefined : this.markDisabled(name, file.path);
+    file.enabled = !this.disabledNames.has(name);
 
     // Create registry entry
     const entry: SkillRegistryEntry = {
@@ -58,6 +96,7 @@ export class SkillRegistry {
     }
 
     this.emit({ type: 'skill:loaded', name, path: file.path });
+    return madeDisable;
   }
 
   /**
@@ -138,9 +177,14 @@ export class SkillRegistry {
   }
 
   /**
-   * Enable a skill
+   * Enable a skill. Returns false when no skill of that name is registered.
+   *
+   * The name is no longer disabled, whether or not a skill is registered
+   * under it: a skill registered under it later is enabled. No other name
+   * changes, also not another name registered from the same file.
    */
   enable(name: string): boolean {
+    this.disabledNames.delete(name);
     const entry = this.skills.get(name);
     if (!entry) return false;
     entry.file.enabled = true;
@@ -148,13 +192,60 @@ export class SkillRegistry {
   }
 
   /**
-   * Disable a skill
+   * Disable a skill. Returns false, and changes nothing, when no skill of
+   * that name is registered. The name stays disabled until enable() is
+   * called for it, also when the skill is unregistered and registered again
+   * in between. No other name changes.
    */
   disable(name: string): boolean {
     const entry = this.skills.get(name);
     if (!entry) return false;
     entry.file.enabled = false;
+    this.markDisabled(name, entry.file.path);
     return true;
+  }
+
+  /**
+   * Disable a name that is not disabled yet, under a new disable id, for
+   * the skill from `filePath`, and return that disable. A name that is
+   * disabled already keeps its disable, and the file that disable was made
+   * for; then this returns undefined.
+   */
+  private markDisabled(name: string, filePath: string): SkillDisable | undefined {
+    if (this.disabledNames.has(name)) {
+      return undefined;
+    }
+    const disable: SkillDisable = { id: nextDisableId++, path: filePath };
+    this.disabledNames.set(name, disable);
+    return disable;
+  }
+
+  /**
+   * The disable in force for the name, or undefined when the name is not
+   * disabled: its id, and the file of the skill it was made for (the skill
+   * registered under the name when disable() was called, or the SkillFile
+   * registered with `enabled: false`). A skill from another file registered
+   * under the name later is disabled by it, but the disable stays made for
+   * the first file.
+   *
+   * A name gets a new id each time it goes from enabled to disabled;
+   * disabling it again while it is disabled keeps the id. Ids are unique in
+   * the process, also across registries. So when an id read earlier is
+   * still the one in force, enable() has not been called for the name
+   * since, and a later disable cannot be taken for the earlier one.
+   */
+  getDisable(name: string): SkillDisable | undefined {
+    return this.disabledNames.get(name);
+  }
+
+  /**
+   * True when the name is disabled: disable() was called for it, or a
+   * SkillFile was registered under it with `enabled: false`, and enable()
+   * has not been called for it since. Also true while no skill is
+   * registered under the name; isEnabled() answers for a registered skill.
+   */
+  isNameDisabled(name: string): boolean {
+    return this.disabledNames.has(name);
   }
 
   /**
@@ -291,7 +382,8 @@ export class SkillRegistry {
   }
 
   /**
-   * Clear all skills
+   * Clear all skills. The disabled names stay disabled, as the execution
+   * statistics stay; resetSkillRegistry() starts without them.
    */
   clear(): void {
     for (const name of this.skills.keys()) {

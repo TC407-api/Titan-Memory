@@ -12,6 +12,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execFileSync, spawn } from 'child_process';
 import {
   loadSkillFromFile,
   loadSkillsFromDirectory,
@@ -219,6 +220,25 @@ triggers:
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it('should keep a quoted number or boolean as the string it spells', async () => {
+    const dir = makeTempDir('quoted-number');
+    const content = `---
+name: "2026"
+version: "007"
+description: 'true'
+triggers:
+  - quoted-number
+---
+`;
+    const filePath = writeSkillMd(dir, 'quoted-number.skill.md', content);
+    const result = await loadSkillFromFile(filePath);
+    expect(result).not.toBeNull();
+    expect(result!.metadata.name).toBe('2026');
+    expect(result!.metadata.version).toBe('007');
+    expect(result!.metadata.description).toBe('true');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it('should ignore comment lines and blank lines in frontmatter', async () => {
     const dir = makeTempDir('comments');
     const content = `---
@@ -281,6 +301,22 @@ triggers:
     const result = await loadSkillFromFile(filePath);
     expect(result).toBeNull();
     warnSpy.mockRestore();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('should return null when the name is not a string', async () => {
+    const dir = makeTempDir('numeric-name');
+    const content = `---
+name: 2026
+triggers:
+  - numeric-name
+---
+`;
+    const filePath = writeSkillMd(dir, 'numeric-name.skill.md', content);
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const result = await loadSkillFromFile(filePath);
+    expect(result).toBeNull();
+    errorSpy.mockRestore();
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -408,6 +444,83 @@ triggers:
     expect(Object.prototype.toString.call(result!.lastModified)).toBe('[object Date]');
     expect(isNaN(result!.lastModified.getTime())).toBe(false);
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+// ===========================================================================
+// loadSkillFromFile — a .skill.md path that is not a regular file
+// ===========================================================================
+
+describe('loadSkillFromFile — a .skill.md path that is not a regular file', () => {
+  it('should return null for a directory named like a skill file', async () => {
+    const dir = makeTempDir('md-directory');
+    const filePath = path.join(dir, 'folder.skill.md');
+    fs.mkdirSync(filePath);
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(loadSkillFromFile(filePath)).resolves.toBeNull();
+
+    warnSpy.mockRestore();
+    errorSpy.mockRestore();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Windows has no FIFOs in the file system.
+  const itWithFifo = process.platform === 'win32' ? it.skip : it;
+
+  itWithFifo('should return null at once for a FIFO, without waiting for a writer', async () => {
+    const dir = makeTempDir('md-fifo');
+    const fifo = path.join(dir, 'pipe.skill.md');
+    execFileSync('mkfifo', [fifo]);
+    // A writer that connects after 3 s. A blocking read would hang until then
+    // and load what it writes; without the writer it would hang for good.
+    const content = '---\nname: from-fifo\ntriggers: [fifo]\n---\n';
+    const writer = spawn(
+      process.execPath,
+      ['-e', `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(fifo)}, ${JSON.stringify(content)}), 3000)`],
+      { stdio: 'ignore' }
+    );
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const started = Date.now();
+      const result = await loadSkillFromFile(fifo);
+
+      expect(result).toBeNull();
+      expect(Date.now() - started).toBeLessThan(2000);
+    } finally {
+      writer.kill('SIGKILL');
+      warnSpy.mockRestore();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+});
+
+describe('loadSkillFromFile — throwFileSystemErrors', () => {
+  it('should throw a file system error only when asked to, and still return null for content that is not a skill', async () => {
+    const dir = makeTempDir('md-busy');
+    const filePath = writeSkillMd(dir, 'busy.skill.md', '---\nname: busy-skill\ntriggers: [busy]\n---\n');
+    const nodeFs = jest.requireActual<typeof fs>('fs');
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const openSpy = jest.spyOn(nodeFs, 'openSync').mockImplementation(() => {
+      throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY', syscall: 'open' });
+    });
+    try {
+      await expect(loadSkillFromFile(filePath)).resolves.toBeNull();
+      await expect(loadSkillFromFile(filePath, { throwFileSystemErrors: true })).rejects.toMatchObject({
+        code: 'EBUSY',
+      });
+      openSpy.mockRestore();
+
+      fs.writeFileSync(filePath, 'no frontmatter, so not a skill\n');
+      await expect(loadSkillFromFile(filePath, { throwFileSystemErrors: true })).resolves.toBeNull();
+    } finally {
+      openSpy.mockRestore();
+      errorSpy.mockRestore();
+      warnSpy.mockRestore();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -594,6 +707,154 @@ triggers:
 
     expect(result).not.toBeNull();
     expect(getSkillRegistry().has('onload-skill')).toBe(true);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const skillMd = (name: string): string => `---\nname: ${name}\ntriggers: [${name}]\n---\n`;
+
+  it('should keep a disabled skill disabled when its file is reloaded', async () => {
+    const dir = makeTempDir('reload-disabled');
+    const filePath = writeSkillMd(dir, 'off.skill.md', skillMd('off-skill'));
+    const registry = getSkillRegistry();
+    await reloadSkill(filePath);
+    expect(registry.isEnabled('off-skill')).toBe(true);
+    registry.disable('off-skill');
+
+    const result = await reloadSkill(filePath);
+
+    expect(result?.enabled).toBe(false);
+    expect(registry.has('off-skill')).toBe(true);
+    expect(registry.isEnabled('off-skill')).toBe(false);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('should keep a disabled skill disabled after a reload that failed', async () => {
+    const dir = makeTempDir('reload-disabled-broken');
+    const filePath = writeSkillMd(dir, 'mend.skill.md', skillMd('mend-skill'));
+    const registry = getSkillRegistry();
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    await reloadSkill(filePath);
+    registry.disable('mend-skill');
+
+    fs.writeFileSync(filePath, 'no frontmatter, so this version cannot be loaded\n');
+    expect(await reloadSkill(filePath)).toBeNull();
+    expect(registry.has('mend-skill')).toBe(false);
+    fs.writeFileSync(filePath, skillMd('mend-skill'));
+    await reloadSkill(filePath);
+
+    expect(registry.has('mend-skill')).toBe(true);
+    expect(registry.isEnabled('mend-skill')).toBe(false);
+    warnSpy.mockRestore();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // The registry keeps a disable per skill name. reloadSkill() does not carry
+  // one over to a new name (the skill watcher does; see skill-watcher.test.ts).
+  it('should keep the old name disabled when the reload gives the skill another name', async () => {
+    const dir = makeTempDir('reload-disabled-renamed');
+    const filePath = writeSkillMd(dir, 'renamed.skill.md', skillMd('old-name'));
+    const registry = getSkillRegistry();
+    await reloadSkill(filePath);
+    registry.disable('old-name');
+
+    fs.writeFileSync(filePath, skillMd('new-name'));
+    await reloadSkill(filePath);
+
+    expect(registry.has('old-name')).toBe(false);
+    expect(registry.isNameDisabled('old-name')).toBe(true);
+    expect(registry.isNameDisabled('new-name')).toBe(false);
+    fs.writeFileSync(filePath, skillMd('old-name'));
+    await reloadSkill(filePath);
+    expect(registry.isEnabled('old-name')).toBe(false);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('should load an enabled skill as enabled when it is reloaded', async () => {
+    const dir = makeTempDir('reload-enabled');
+    const filePath = writeSkillMd(dir, 'on.skill.md', skillMd('on-skill'));
+    await reloadSkill(filePath);
+
+    const result = await reloadSkill(filePath);
+
+    expect(result?.enabled).toBe(true);
+    expect(getSkillRegistry().isEnabled('on-skill')).toBe(true);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A promise and the function that settles it, for a hook that is still pending. */
+  function createGate(): { opened: Promise<void>; open: () => void } {
+    let open: () => void = () => undefined;
+    const opened = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    return { opened, open };
+  }
+
+  it('should keep a name disabled through a failed reload, also for another file under that name', async () => {
+    const dir = makeTempDir('reload-disabled-broken-renamed');
+    const filePath = writeSkillMd(dir, 'mend.skill.md', skillMd('before-name'));
+    const registry = getSkillRegistry();
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    await reloadSkill(filePath);
+    registry.disable('before-name');
+
+    fs.writeFileSync(filePath, 'no frontmatter, so this version cannot be loaded\n');
+    expect(await reloadSkill(filePath)).toBeNull();
+    const otherPath = writeSkillMd(dir, 'other.skill.md', skillMd('before-name'));
+    await reloadSkill(otherPath);
+
+    expect(registry.has('before-name')).toBe(true);
+    expect(registry.isEnabled('before-name')).toBe(false);
+    warnSpy.mockRestore();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('should keep enable() of a name through later reloads', async () => {
+    const dir = makeTempDir('reload-enable-after-disable');
+    const filePath = writeSkillMd(dir, 'toggled.skill.md', skillMd('toggled-name'));
+    const registry = getSkillRegistry();
+    await reloadSkill(filePath);
+    registry.disable('toggled-name');
+    await reloadSkill(filePath);
+    expect(registry.isEnabled('toggled-name')).toBe(false);
+
+    expect(registry.enable('toggled-name')).toBe(true);
+    await reloadSkill(filePath);
+
+    expect(registry.isEnabled('toggled-name')).toBe(true);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('should keep a skill enabled when enable() succeeds while onUnload() is pending', async () => {
+    const dir = makeTempDir('reload-enable-during-unload');
+    const filePath = writeSkillMd(dir, 'flip.skill.md', skillMd('flip-skill'));
+    const registry = getSkillRegistry();
+    const gate = createGate();
+    createRegisteredSkillFile('flip-skill', filePath, { onUnload: () => gate.opened });
+    registry.disable('flip-skill');
+
+    const reloading = reloadSkill(filePath);
+    expect(registry.enable('flip-skill')).toBe(true);
+    gate.open();
+    await reloading;
+
+    expect(registry.isEnabled('flip-skill')).toBe(true);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('should keep a skill disabled when disable() succeeds while onUnload() is pending', async () => {
+    const dir = makeTempDir('reload-disable-during-unload');
+    const filePath = writeSkillMd(dir, 'flop.skill.md', skillMd('flop-skill'));
+    const registry = getSkillRegistry();
+    const gate = createGate();
+    createRegisteredSkillFile('flop-skill', filePath, { onUnload: () => gate.opened });
+
+    const reloading = reloadSkill(filePath);
+    expect(registry.disable('flop-skill')).toBe(true);
+    gate.open();
+    await reloading;
+
+    expect(registry.isEnabled('flop-skill')).toBe(false);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });

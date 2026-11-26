@@ -67,13 +67,16 @@ function parseFrontmatter(content: string): { metadata: Record<string, unknown>;
         currentKey = null;
         currentArray = null;
       } else {
-        // Simple value
+        // Simple value. A quoted value stays the string it spells; only a
+        // bare value is read as a boolean or a number.
+        const isQuoted = /^(["']).*\1$/.test(value);
         let parsedValue: unknown = value.replace(/^["']|["']$/g, '');
-        // Try to parse numbers and booleans
-        if (parsedValue === 'true') parsedValue = true;
-        else if (parsedValue === 'false') parsedValue = false;
-        else if (!isNaN(Number(parsedValue)) && parsedValue !== '') {
-          parsedValue = Number(parsedValue);
+        if (!isQuoted) {
+          if (parsedValue === 'true') parsedValue = true;
+          else if (parsedValue === 'false') parsedValue = false;
+          else if (!isNaN(Number(parsedValue)) && parsedValue !== '') {
+            parsedValue = Number(parsedValue);
+          }
         }
         metadata[key] = parsedValue;
         currentKey = null;
@@ -94,13 +97,15 @@ function parseFrontmatter(content: string): { metadata: Record<string, unknown>;
  * Validate skill metadata
  */
 function validateMetadata(metadata: Record<string, unknown>): SkillMetadata {
-  const name = metadata.name as string;
+  const name = metadata.name;
   const version = (metadata.version as string) || '1.0.0';
   const description = (metadata.description as string) || '';
   const triggers = (metadata.triggers as string[]) || [];
 
-  if (!name) {
-    throw new Error('Skill metadata must include a name');
+  // The registry is keyed by the name, so it must be a string: a bare
+  // `name: 2026` would be registered under a number no caller can look up.
+  if (typeof name !== 'string' || name.trim() === '') {
+    throw new Error('Skill metadata must include a name (a non-empty string)');
   }
 
   if (!Array.isArray(triggers) || triggers.length === 0) {
@@ -119,10 +124,49 @@ function validateMetadata(metadata: Record<string, unknown>): SkillMetadata {
   };
 }
 
+// fs.constants has no O_NONBLOCK on Windows, which has no FIFOs either.
+const OPEN_WITHOUT_BLOCKING = fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0);
+
 /**
- * Load a skill from a file path
+ * Read a file as UTF-8 text, or return null when it is not a regular file.
+ *
+ * Opened without blocking, so a FIFO or a device cannot hold up the process
+ * waiting for a writer. The type is checked on the opened descriptor and the
+ * text is read from that same descriptor, so a path that is replaced after
+ * an earlier check cannot bring a FIFO in.
  */
-export async function loadSkillFromFile(filePath: string): Promise<SkillFile | null> {
+function readRegularFileText(filePath: string): string | null {
+  const fd = fs.openSync(filePath, OPEN_WITHOUT_BLOCKING);
+  try {
+    return fs.fstatSync(fd).isFile() ? fs.readFileSync(fd, 'utf-8') : null;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+export interface LoadSkillOptions {
+  /**
+   * Throw a file system error (one with a `code`, from stat, open or read)
+   * instead of returning null, so a caller can tell a file that could not
+   * be read right now from one whose content is not a skill. Default false.
+   */
+  throwFileSystemErrors?: boolean;
+}
+
+/** True for an error from a file system call (it has a string `code` and a `syscall`). */
+function isFileSystemError(error: unknown): error is NodeJS.ErrnoException {
+  const candidate = error as NodeJS.ErrnoException | null;
+  return typeof candidate?.code === 'string' && typeof candidate.syscall === 'string';
+}
+
+/**
+ * Load a skill from a file path. Returns null when the file is not a skill
+ * or cannot be loaded; see LoadSkillOptions for file system errors.
+ */
+export async function loadSkillFromFile(
+  filePath: string,
+  options: LoadSkillOptions = {}
+): Promise<SkillFile | null> {
   try {
     const absolutePath = path.resolve(filePath);
 
@@ -187,7 +231,11 @@ export async function loadSkillFromFile(filePath: string): Promise<SkillFile | n
 
     // Handle .skill.md or .skill.ts files with frontmatter
     if (absolutePath.includes('.skill.')) {
-      const content = fs.readFileSync(absolutePath, 'utf-8');
+      const content = readRegularFileText(absolutePath);
+      if (content === null) {
+        console.warn(`Skill file is not a regular file: ${filePath}`);
+        return null;
+      }
       const { metadata: rawMetadata } = parseFrontmatter(content);
 
       if (Object.keys(rawMetadata).length === 0) {
@@ -222,6 +270,9 @@ export async function loadSkillFromFile(filePath: string): Promise<SkillFile | n
     console.warn(`Unsupported skill file format: ${filePath}`);
     return null;
   } catch (error) {
+    if (options.throwFileSystemErrors && isFileSystemError(error)) {
+      throw error;
+    }
     console.error(`Error loading skill from ${filePath}:`, error);
     return null;
   }

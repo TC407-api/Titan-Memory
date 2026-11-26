@@ -152,6 +152,255 @@ describe('Skill System', () => {
       expect(registry.isEnabled('toggle-skill')).toBe(true);
     });
 
+    it('should keep a disabled skill disabled when it is registered again', () => {
+      registry.register(createSkillFile(createTestSkill('sticky-skill', ['sticky'])));
+      registry.disable('sticky-skill');
+
+      // A fresh SkillFile, as the loader builds one for an edited file.
+      registry.register(createSkillFile(createTestSkill('sticky-skill', ['sticky'])));
+
+      expect(registry.isEnabled('sticky-skill')).toBe(false);
+      expect(registry.findByTrigger('sticky')).toEqual([]);
+      expect(registry.findByText('a sticky situation')).toBeUndefined();
+    });
+
+    it('should keep a disabled skill disabled after it is unregistered and registered again', () => {
+      registry.register(createSkillFile(createTestSkill('gone-skill', ['gone'])));
+      registry.disable('gone-skill');
+      registry.unregister('gone-skill');
+      expect(registry.isEnabled('gone-skill')).toBe(false);
+
+      registry.register(createSkillFile(createTestSkill('gone-skill', ['gone'])));
+
+      expect(registry.has('gone-skill')).toBe(true);
+      expect(registry.isEnabled('gone-skill')).toBe(false);
+      expect(registry.listDisabled().map((m) => m.name)).toEqual(['gone-skill']);
+    });
+
+    it('should register a skill as enabled again once enable() was called for it', () => {
+      registry.register(createSkillFile(createTestSkill('back-skill', ['back'])));
+      registry.disable('back-skill');
+      registry.enable('back-skill');
+
+      registry.register(createSkillFile(createTestSkill('back-skill', ['back'])));
+
+      expect(registry.isEnabled('back-skill')).toBe(true);
+    });
+
+    it('should let enable() lift a disable while the skill is not registered', () => {
+      registry.register(createSkillFile(createTestSkill('away-skill', ['away'])));
+      registry.disable('away-skill');
+      registry.unregister('away-skill');
+
+      expect(registry.enable('away-skill')).toBe(false);
+      registry.register(createSkillFile(createTestSkill('away-skill', ['away'])));
+
+      expect(registry.isEnabled('away-skill')).toBe(true);
+    });
+
+    it('should remember a skill that is registered in the disabled state', () => {
+      const file = createSkillFile(createTestSkill('born-off', ['born']));
+      file.enabled = false;
+      registry.register(file);
+      registry.unregister('born-off');
+
+      registry.register(createSkillFile(createTestSkill('born-off', ['born'])));
+
+      expect(registry.isEnabled('born-off')).toBe(false);
+    });
+
+    it('should not disable other skills, and should return false for an unknown name', () => {
+      registry.register(createSkillFile(createTestSkill('other-skill', ['other'])));
+
+      expect(registry.disable('never-registered')).toBe(false);
+      registry.register(createSkillFile(createTestSkill('never-registered', ['never'])));
+
+      expect(registry.isEnabled('never-registered')).toBe(true);
+      expect(registry.isEnabled('other-skill')).toBe(true);
+    });
+
+    // A skill file as the loader builds it for the file at `filePath`.
+    const fileAt = (filePath: string, name: string): SkillFile => ({
+      ...createSkillFile(createTestSkill(name, [name])),
+      path: filePath,
+    });
+
+    // The disabled state belongs to the name. These pin that contract down for
+    // each call, for a registered and an unregistered name.
+
+    it('should keep the state of a name, not of a file, when the file comes back under another name', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'first-name'));
+      registry.disable('first-name');
+      registry.unregister('first-name');
+
+      registry.register(fileAt('/skills/a.skill.md', 'second-name'));
+      registry.register(fileAt('/skills/b.skill.md', 'first-name'));
+
+      expect(registry.isEnabled('second-name')).toBe(true);
+      expect(registry.isNameDisabled('second-name')).toBe(false);
+      expect(registry.isEnabled('first-name')).toBe(false);
+    });
+
+    it('should report a disabled name with isNameDisabled() while nothing is registered under it', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'first-name'));
+      expect(registry.isNameDisabled('first-name')).toBe(false);
+      registry.disable('first-name');
+      registry.unregister('first-name');
+
+      expect(registry.isEnabled('first-name')).toBe(false);
+      expect(registry.isNameDisabled('first-name')).toBe(true);
+      expect(registry.enable('first-name')).toBe(false);
+      expect(registry.isNameDisabled('first-name')).toBe(false);
+    });
+
+    it('should disable any file registered under a disabled name, and enable() lifts it for all', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'shared-name'));
+      registry.disable('shared-name');
+      registry.register(fileAt('/skills/b.skill.md', 'shared-name'));
+      expect(registry.isEnabled('shared-name')).toBe(false);
+
+      expect(registry.enable('shared-name')).toBe(true);
+      registry.register(fileAt('/skills/a.skill.md', 'shared-name'));
+
+      expect(registry.isEnabled('shared-name')).toBe(true);
+    });
+
+    it('should give a name a new disable id only when it goes from enabled to disabled', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'counted'));
+      expect(registry.getDisable('counted')).toBeUndefined();
+
+      registry.disable('counted');
+      const first = registry.getDisable('counted');
+      registry.disable('counted');
+      registry.register(fileAt('/skills/a.skill.md', 'counted'));
+      expect(first).toEqual({ id: expect.any(Number), path: '/skills/a.skill.md' });
+      expect(registry.getDisable('counted')?.id).toBe(first?.id);
+
+      registry.enable('counted');
+      expect(registry.getDisable('counted')).toBeUndefined();
+      registry.disable('counted');
+      expect(registry.getDisable('counted')?.id).not.toBe(first?.id);
+    });
+
+    it('should keep the file a disable was made for when another file registers under the name', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'owned-off'));
+      registry.disable('owned-off');
+      registry.register(fileAt('/skills/b.skill.md', 'owned-off'));
+      registry.disable('owned-off');
+
+      expect(registry.getDisable('owned-off')?.path).toBe('/skills/a.skill.md');
+    });
+
+    it('should never reuse a disable id in a registry made after a reset', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'first-off'));
+      registry.disable('first-off');
+      const before = registry.getDisable('first-off')?.id;
+
+      resetSkillRegistry();
+      const fresh = getSkillRegistry();
+      fresh.register(fileAt('/skills/a.skill.md', 'first-off'));
+      fresh.disable('first-off');
+
+      expect(fresh.getDisable('first-off')?.id).not.toBe(before);
+    });
+
+    it('should not change other names when disable() or enable() is called for one', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'report'));
+      registry.register(fileAt('/skills/b.skill.md', 'summary'));
+      registry.disable('summary');
+
+      registry.disable('report');
+      registry.enable('report');
+
+      expect(registry.isEnabled('report')).toBe(true);
+      expect(registry.isEnabled('summary')).toBe(false);
+      expect(registry.isNameDisabled('summary')).toBe(true);
+    });
+
+    it('should let enable() of a name lift the disable for every file under that name', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'report'));
+      registry.disable('report');
+      registry.unregister('report');
+      registry.register(fileAt('/skills/b.skill.md', 'report'));
+      expect(registry.isEnabled('report')).toBe(false);
+
+      expect(registry.enable('report')).toBe(true);
+      registry.register(fileAt('/skills/b.skill.md', 'report'));
+      expect(registry.isEnabled('report')).toBe(true);
+      registry.register(fileAt('/skills/a.skill.md', 'report'));
+
+      expect(registry.isEnabled('report')).toBe(true);
+    });
+
+    it('should not disable a second name that a file registers while its first name is disabled', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'daily'));
+      registry.disable('daily');
+      registry.register(fileAt('/skills/a.skill.md', 'alias'));
+      expect(registry.isEnabled('alias')).toBe(true);
+      expect(registry.isEnabled('daily')).toBe(false);
+
+      registry.register(fileAt('/skills/b.skill.md', 'daily'));
+
+      expect(registry.isEnabled('daily')).toBe(false);
+    });
+
+    it('should keep a name disabled when enable() is called for another name of the same file', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'daily'));
+      registry.disable('daily');
+      registry.register(fileAt('/skills/a.skill.md', 'alias'));
+
+      expect(registry.enable('alias')).toBe(true);
+      registry.register(fileAt('/skills/a.skill.md', 'daily'));
+
+      expect(registry.isEnabled('daily')).toBe(false);
+      expect(registry.isEnabled('alias')).toBe(true);
+      registry.unregister('daily');
+      registry.register(fileAt('/skills/a.skill.md', 'daily'));
+      expect(registry.isEnabled('daily')).toBe(false);
+    });
+
+    it('should keep an alias enabled after enable() when the file registers it again', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'daily'));
+      registry.disable('daily');
+      registry.register(fileAt('/skills/a.skill.md', 'alias'));
+      registry.disable('alias');
+      expect(registry.enable('alias')).toBe(true);
+      registry.unregister('alias');
+      registry.unregister('daily');
+
+      registry.register(fileAt('/skills/a.skill.md', 'alias'));
+
+      expect(registry.isEnabled('alias')).toBe(true);
+    });
+
+    it('should keep a disable that only disable() made when register() is given an enabled file', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'kept-off'));
+      registry.disable('kept-off');
+
+      const fresh = fileAt('/skills/a.skill.md', 'kept-off');
+      expect(fresh.enabled).toBe(true);
+      registry.register(fresh);
+
+      expect(fresh.enabled).toBe(false);
+      expect(registry.listDisabled().map((m) => m.name)).toEqual(['kept-off']);
+    });
+
+    it('should keep an enable() that a listener calls while register() replaces a disabled skill', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'report'));
+      registry.disable('report');
+      const enableOnUnload: Parameters<typeof registry.addEventListener>[0] = (event) => {
+        if (event.type === 'skill:unloaded' && event.name === 'report') registry.enable('report');
+      };
+      registry.addEventListener(enableOnUnload);
+      try {
+        registry.register(fileAt('/skills/a.skill.md', 'report'));
+      } finally {
+        registry.removeEventListener(enableOnUnload);
+      }
+
+      expect(registry.isEnabled('report')).toBe(true);
+    });
+
     it('should list all skills', () => {
       registry.register(createSkillFile(createTestSkill('list-a', ['a'])));
       registry.register(createSkillFile(createTestSkill('list-b', ['b'])));
@@ -398,7 +647,7 @@ This is a test skill.
       expect(() => watcher.off('loaded', callback)).not.toThrow();
     });
 
-    it('should not start twice', () => {
+    it('should not start twice', async () => {
       const watchDir = path.join(testDir, 'double-start');
       fs.mkdirSync(watchDir, { recursive: true });
 
@@ -409,7 +658,7 @@ This is a test skill.
 
       expect(watcher.isWatching()).toBe(true);
 
-      watcher.stop();
+      await watcher.stop();
     });
 
     it('should return watched directory', () => {

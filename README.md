@@ -27,10 +27,10 @@
   <img alt="Version" src="https://img.shields.io/badge/version-2.1.0-blue">
   <img alt="Tests" src="https://img.shields.io/badge/tests-2%2C310%20passing-brightgreen">
   <img alt="Benchmarks" src="https://img.shields.io/badge/benchmarks-74.6%2F100%20(16%2F18%20pass)-blue">
-  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.4-blue">
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.8-blue">
   <img alt="MCP" src="https://img.shields.io/badge/MCP-compatible-purple">
   <img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-orange">
-  <img alt="Node" src="https://img.shields.io/badge/node-%3E%3D22.14-green">
+  <img alt="Node" src="https://img.shields.io/badge/node-%3E%3D22.22-green">
 </p>
 
 ---
@@ -839,7 +839,7 @@ For organizations with ESG commitments, carbon reporting requirements, or sustai
 | Benchmark score (zero-LLM) | 84.2 / 100 |
 | Benchmark score (LLM mode) | **90.7 / 100** |
 | Dependencies | 9 production, 8 dev |
-| Node.js | >= 22.14 (on 23.x: >= 23.6) |
+| Node.js | >= 22.22 (on 23.x: >= 23.6) |
 | MCP tools | 30 |
 | Memory layers | 5 |
 | Cortex categories | 5 |
