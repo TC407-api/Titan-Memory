@@ -557,6 +557,95 @@ describe('SkillWatcher file events (end to end)', () => {
     }
   }, 30000);
 
+  it('unloads its own skill when a renamed file is deleted, and leaves what a listener registered from it', async () => {
+    startWatcher();
+    const file = path.resolve(await addAndWaitForLoad(skillsDir, 'first-title'));
+    const registry = getSkillRegistry();
+    const fallback = codeSkillFile(file, 'fallback-title', ['fallback-title']);
+    // Registers another name from the same file when the rename drops the old one.
+    const registerFallback: Parameters<typeof registry.addEventListener>[0] = (event) => {
+      if (event.type === 'skill:unloaded' && event.name === 'first-title' && !registry.has('fallback-title')) {
+        registry.register(fallback);
+      }
+    };
+    registry.addEventListener(registerFallback);
+    try {
+      fs.writeFileSync(file, '---\nname: second-title\ntriggers: [second-title]\n---\nrenamed\n');
+      await waitFor(() => names('reloaded').includes('second-title'), "'reloaded' for second-title");
+      fs.rmSync(file);
+      await waitFor(() => names('unloaded').includes('second-title'), "'unloaded' for second-title");
+
+      expect(registry.has('second-title')).toBe(false);
+      expect(registry.getFile('fallback-title')).toBe(fallback);
+    } finally {
+      registry.removeEventListener(registerFallback);
+    }
+  }, 30000);
+
+  it('neither unloads nor runs the hooks of a skill something else registered from a deleted file', async () => {
+    const started = startWatcher();
+    const registry = getSkillRegistry();
+    const file = path.join(skillsDir, 'hooked.skill.md');
+    const replacement = codeSkillFile(path.join(skillsDir, 'other.js'), 'hooked', ['hooked']);
+    const hooked = codeSkillFile(file, 'hooked', ['hooked']);
+    let unloadHookCalls = 0;
+    // While this hook runs, another file takes the name.
+    hooked.skill.onUnload = async () => {
+      unloadHookCalls += 1;
+      registry.register(replacement);
+    };
+    registry.register(hooked);
+
+    const handlers = started as unknown as { handleFileUnlink(file: string): void };
+    handlers.handleFileUnlink(file);
+    await sleep(100);
+
+    expect(unloadHookCalls).toBe(0);
+    expect(registry.getFile('hooked')).toBe(hooked);
+    expect(names('unloaded')).toEqual([]);
+  }, 30000);
+
+  it('does not replace a skill with hooks that something else registered from the same file', async () => {
+    startWatcher();
+    const registry = getSkillRegistry();
+    const file = path.join(skillsDir, 'hooked-here.skill.md');
+    const hooked = codeSkillFile(file, 'hooked-here', ['hooked-here']);
+    let unloadHookCalls = 0;
+    hooked.skill.onUnload = async () => {
+      unloadHookCalls += 1;
+    };
+    registry.register(hooked);
+
+    writeSkillFile(skillsDir, 'hooked-here');
+    await waitFor(() => errorsFor(file).length > 0, "an 'error' for hooked-here.skill.md");
+
+    expect(registry.getFile('hooked-here')).toBe(hooked);
+    expect(unloadHookCalls).toBe(0);
+    expect(names('loaded')).toEqual([]);
+  }, 30000);
+
+  // On Windows a backslash is a separator, so these names cannot be made there.
+  (process.platform === 'win32' ? it.skip : it)(
+    'loads no file whose name has a backslash in it',
+    async () => {
+      const writeNamed = (fileName: string, name: string): void => {
+        fs.writeFileSync(path.join(skillsDir, fileName), `---\nname: ${name}\ntriggers: [${name}]\n---\nbody\n`);
+      };
+      startWatcher({ patterns: ['team/**/*.skill.md', '*.skill.md'] });
+      writeNamed('team\\daily.skill.md', 'slash-team');
+      writeNamed('.disabled\\daily.skill.md', 'slash-disabled');
+      writeNamed('a\\b.skill.md', 'slash-plain');
+      await addAndWaitForLoad(skillsDir, 'kept-skill');
+      await sleep(SETTLE_MS);
+
+      expect(names('loaded')).toEqual(['kept-skill']);
+      for (const name of ['slash-team', 'slash-disabled', 'slash-plain']) {
+        expect(getSkillRegistry().has(name)).toBe(false);
+      }
+    },
+    30000
+  );
+
   it('does not report or own a load that a registry listener replaces during the register', async () => {
     const started = startWatcher();
     const registry = getSkillRegistry();

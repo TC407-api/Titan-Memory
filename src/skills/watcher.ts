@@ -6,7 +6,7 @@
 import { watch, FSWatcher } from 'chokidar';
 import fs from 'fs';
 import path from 'path';
-import { loadSkillFromFile, unloadSkill, getDefaultSkillsDir } from './loader.js';
+import { loadSkillFromFile, getDefaultSkillsDir } from './loader.js';
 import { getSkillRegistry } from './registry.js';
 import type { SkillFile } from './types.js';
 import {
@@ -83,6 +83,15 @@ function pathExists(filePath: string): boolean {
  * replace that skill: an 'error' event names the other file. It is loaded
  * on its next change after the name has become free.
  *
+ * The watcher unloads only skills it loaded: when a file is deleted, broken,
+ * renamed inside or replaced by a link, and on stop(). Each unload removes
+ * one exact SkillFile, and only while it is still the one registered under
+ * its name. A skill that anything else registered, from the same file too,
+ * stays. The one exception is a load that replaces the skill registered
+ * under the same name from the same file (the watcher's earlier version, or
+ * one registered before start()); a skill with an onLoad() or onUnload()
+ * hook is never replaced, as the watcher runs no hooks.
+ *
  * Listeners, the watcher's and the registry's, run during loads and
  * unloads, and can stop the watcher or register skills. After each registry
  * call and each event it emits, the watcher checks the run and the registry
@@ -95,6 +104,9 @@ function pathExists(filePath: string): boolean {
  * replaced while it was stopped. A registration something else made since
  * (from the same file, or under the same name) is left alone, and a load
  * that is still running when stop() is called registers nothing.
+ *
+ * On POSIX a name below skillsDir that contains a backslash is never
+ * loaded: chokidar reads the backslash as a separator (see createWatchFilter).
  *
  * File paths are compared as strings, spelled as the watcher reports them
  * (below skillsDir as given), as the loader and the registry do. A skill
@@ -341,7 +353,7 @@ export class SkillWatcher {
       this.debounceTimers.delete(filePath);
     }
 
-    this.runReportingErrors(filePath, () => this.unloadFile(filePath));
+    this.runReportingErrors(filePath, async () => this.unloadFile(filePath));
   }
 
   /** Run a load or unload of `filePath`, and report a failure as an 'error' event. */
@@ -357,7 +369,7 @@ export class SkillWatcher {
       // A link now, or below one, or deleted since the event. Unloaded before
       // the 'error' is emitted, so nothing a listener does then is undone.
       const isPresent = pathExists(filePath);
-      await this.unloadFile(filePath);
+      this.unloadFile(filePath);
       if (isPresent) {
         const reason = `${filePath} is outside the skills directory or behind a symbolic link`;
         this.emit('error', filePath, filePath, new Error(`Skill not loaded: ${reason}`));
@@ -371,15 +383,13 @@ export class SkillWatcher {
     if (generation !== this.generation) {
       return;
     }
-    // What this load may replace, taken before any listener runs: the
-    // version registered from this file under the new name.
-    const registered = skillFile ? getSkillRegistry().getFile(skillFile.metadata.name) : undefined;
-    const replaced = registered?.path === filePath ? registered : undefined;
-    // The version registered from this file before goes when the new one did
-    // not load or has another name.
-    const previousName = this.findSkillName(filePath);
-    if (previousName && previousName !== skillFile?.metadata.name) {
-      await this.unloadFile(filePath);
+    // What this load may replace, taken before any listener runs.
+    const replaced = this.findReplaceable(skillFile, filePath);
+    // The version this watcher loaded from this file goes when the new one
+    // did not load or has another name.
+    const owned = this.ownedFiles.get(filePath);
+    if (owned && owned.metadata.name !== skillFile?.metadata.name) {
+      this.unloadFile(filePath);
     }
     if (skillFile && generation === this.generation) {
       this.registerUnlessTaken(skillFile, { eventType, filePath, generation, replaced });
@@ -423,30 +433,44 @@ export class SkillWatcher {
     this.emit(eventType === 'add' ? 'loaded' : 'reloaded', name, filePath);
   }
 
+  /**
+   * The skill registered under the name `skillFile` has, from the same file:
+   * the watcher's own earlier version, or one registered before start(). A
+   * load replaces it. One with an onLoad() or onUnload() hook is not
+   * replaced, because the watcher runs no hooks; it holds the name.
+   */
+  private findReplaceable(skillFile: SkillFile | null, filePath: string): SkillFile | undefined {
+    if (!skillFile) {
+      return undefined;
+    }
+    const registered = getSkillRegistry().getFile(skillFile.metadata.name);
+    const hasHooks = Boolean(registered?.skill.onLoad || registered?.skill.onUnload);
+    return registered?.path === filePath && !hasHooks ? registered : undefined;
+  }
+
   /** Unregister `skillFile` if it is still the one registered under its name. True when it was. */
   private dropRegistered(skillFile: SkillFile | undefined): boolean {
     const registry = getSkillRegistry();
     if (!skillFile || registry.getFile(skillFile.metadata.name) !== skillFile) {
       return false;
     }
-    this.ownedFiles.delete(skillFile.path);
+    if (this.ownedFiles.get(skillFile.path) === skillFile) {
+      this.ownedFiles.delete(skillFile.path);
+    }
     return registry.unregister(skillFile.metadata.name);
   }
 
-  /** Unload the skill that was loaded from `filePath`, if there is one. */
-  private async unloadFile(filePath: string): Promise<void> {
+  /**
+   * Unload the skill this watcher loaded from `filePath`, if it is still the
+   * one registered under its name. A skill registered from that file by
+   * anything else stays.
+   */
+  private unloadFile(filePath: string): void {
+    const owned = this.ownedFiles.get(filePath);
     this.ownedFiles.delete(filePath);
-    const name = this.findSkillName(filePath);
-    if (name && (await unloadSkill(name))) {
-      this.emit('unloaded', name, filePath);
+    if (owned && this.dropRegistered(owned)) {
+      this.emit('unloaded', owned.metadata.name, filePath);
     }
-  }
-
-  /** Name of the registered skill that was loaded from `filePath`. */
-  private findSkillName(filePath: string): string | undefined {
-    const registry = getSkillRegistry();
-    return registry.list().find((metadata) => registry.getFile(metadata.name)?.path === filePath)
-      ?.name;
   }
 
   /**

@@ -2,9 +2,9 @@
  * Tests for which file events reach the loader: none after the watcher has
  * stopped, and only those for .skill.md files.
  *
- * loadSkillFromFile and unloadSkill are wrapped in mocks that call the real
- * functions, so the tests can see what the watcher hands them. Files,
- * chokidar events and the registry are real.
+ * loadSkillFromFile is wrapped in a mock that calls the real function, so
+ * the tests can see what the watcher hands it. Files, chokidar events and
+ * the registry are real.
  */
 
 import * as fs from 'fs';
@@ -19,13 +19,11 @@ jest.mock('../src/skills/loader', () => {
   return {
     ...actual,
     loadSkillFromFile: jest.fn(actual.loadSkillFromFile),
-    unloadSkill: jest.fn(actual.unloadSkill),
   };
 });
 
 const actualLoader = jest.requireActual<typeof loader>('../src/skills/loader');
 const loadSkillMock = loader.loadSkillFromFile as jest.MockedFunction<typeof loader.loadSkillFromFile>;
-const unloadSkillMock = loader.unloadSkill as jest.MockedFunction<typeof loader.unloadSkill>;
 
 const EVENT_TIMEOUT_MS = 10000;
 const POLL_MS = 25;
@@ -62,7 +60,6 @@ describe('SkillWatcher: which file events reach the loader', () => {
     resetSkillRegistry();
     seen = [];
     loadSkillMock.mockClear();
-    unloadSkillMock.mockClear();
     skillsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'titan-skill-order-'));
     warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     watcher = new SkillWatcher({ skillsDir, debounceMs: 20 });
@@ -141,7 +138,6 @@ describe('SkillWatcher: which file events reach the loader', () => {
     await waitFor(() => names('unloaded').includes('only-skill'), "'unloaded' for only-skill");
 
     expect(loadedPaths().filter((file) => others.includes(file))).toEqual([]);
-    expect(unloadSkillMock.mock.calls.map(([name]) => name)).not.toContain('code-skill');
     expect(getSkillRegistry().has('code-skill')).toBe(true);
     expect(names('error')).toEqual([]);
   }, 30000);

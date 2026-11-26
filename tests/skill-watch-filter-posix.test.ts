@@ -9,6 +9,7 @@ jest.mock('path', () => jest.requireActual('path').posix);
 import { createWatchFilter, PathKind } from '../src/skills/watch-filter';
 
 const FILE: PathKind = { isFile: () => true };
+const DIRECTORY: PathKind = { isFile: () => false };
 
 describe('createWatchFilter with POSIX paths', () => {
   it('does not read a backslash in a file name as a directory separator', () => {
@@ -21,6 +22,23 @@ describe('createWatchFilter with POSIX paths', () => {
     expect(onlyTeam('/skills/team/daily.skill.md', FILE)).toBe(false);
     // A file in the skills directory itself, named "team\daily.skill.md".
     expect(onlyTeam('/skills/team\\daily.skill.md', FILE)).toBe(true);
+  });
+
+  it('skips every name below the root that has a backslash in it', () => {
+    // chokidar turns a backslash into "/" before it asks the filter, so the
+    // filter cannot know how such a name was spelled. It is never loaded.
+    const skip = createWatchFilter({
+      root: '/skills',
+      patterns: ['**/*.skill.md'],
+      ignored: ['**/.disabled/**'],
+    });
+
+    expect(skip('/skills/.disabled\\daily.skill.md', FILE)).toBe(true);
+    expect(skip('/skills/a\\b.skill.md', FILE)).toBe(true);
+    expect(skip('/skills/custom/a\\b.skill.md', FILE)).toBe(true);
+    expect(skip('/skills/a\\b', DIRECTORY)).toBe(true);
+    expect(skip('/skills/custom/a.skill.md', FILE)).toBe(false);
+    expect(skip('/skills', DIRECTORY)).toBe(false);
   });
 
   it('still accepts a glob written with backslashes', () => {

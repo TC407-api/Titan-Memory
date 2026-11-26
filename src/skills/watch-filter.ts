@@ -34,25 +34,14 @@ export type WatchFilter = (candidatePath: string, stats?: PathKind) => boolean;
 
 const REGEXP_SPECIAL_CHARS = /[.+^${}()|[\]\\]/g;
 
-/** Either separator: a glob can be written with `/` or `\`. */
-const GLOB_SEPARATOR = /[\\/]/;
-/**
- * The separators of a path on this platform. On POSIX a backslash is an
- * ordinary file name character, so only `/` separates there.
- */
-const NATIVE_SEPARATOR = path.sep === '\\' ? /[\\/]/ : /\//;
-
 function toPosixPath(value: string): string {
   return value.replace(/\\/g, '/');
 }
 
-function splitSegments(value: string, separator: RegExp = GLOB_SEPARATOR): string[] {
-  return value.split(separator).filter((segment) => segment !== '' && segment !== '.');
-}
-
-/** A path of this platform with `/` between its segments. */
-function toSlashPath(nativePath: string): string {
-  return nativePath.split(NATIVE_SEPARATOR).join('/');
+function splitSegments(value: string): string[] {
+  return toPosixPath(value)
+    .split('/')
+    .filter((segment) => segment !== '' && segment !== '.');
 }
 
 function convertSegment(segment: string): string {
@@ -119,13 +108,20 @@ export function createWatchFilter(options: WatchFilterOptions): WatchFilter {
 
   return (candidatePath, stats) => {
     const absolutePath = path.resolve(candidatePath);
-    const relativePath = toSlashPath(path.relative(root, absolutePath));
-    if (relativePath === '') {
+    const nativeRelativePath = path.relative(root, absolutePath);
+    if (nativeRelativePath === '') {
       return false;
     }
+    // Where "/" is the only separator, a backslash is part of a name. chokidar
+    // turns it into "/" before it asks this filter, and the globs here read it
+    // as a separator too, so such a name is skipped whichever way it arrives.
+    if (path.sep === '/' && nativeRelativePath.includes('\\')) {
+      return true;
+    }
+    const relativePath = toPosixPath(nativeRelativePath);
     if (
       matchesAny(unwantedBelowRoot, relativePath) ||
-      matchesAny(unwantedAnywhere, splitSegments(absolutePath, NATIVE_SEPARATOR).join('/'))
+      matchesAny(unwantedAnywhere, splitSegments(absolutePath).join('/'))
     ) {
       return true;
     }
