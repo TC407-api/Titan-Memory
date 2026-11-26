@@ -8,7 +8,7 @@ import fs from 'fs';
 import path from 'path';
 import { reloadSkill, unloadSkill, getDefaultSkillsDir } from './loader.js';
 import { getSkillRegistry } from './registry.js';
-import { createWatchFilter, PathKind, WatchFilter } from './watch-filter.js';
+import { createWatchFilter, crossesSymlink, PathKind, WatchFilter } from './watch-filter.js';
 // SkillEvent and SkillEventListener imported for type reference only
 
 export interface SkillWatcherOptions {
@@ -22,7 +22,10 @@ export interface SkillWatcherOptions {
    * See globToRegExp in watch-filter.ts for the supported syntax.
    */
   patterns?: string[];
-  /** Globs for files and directories to skip, relative to skillsDir or absolute */
+  /**
+   * Globs for files and directories to skip. A relative glob is matched
+   * below skillsDir only; an absolute glob is matched against the full path.
+   */
   ignored?: string[];
   /** Auto-start watching */
   autoStart?: boolean;
@@ -73,9 +76,12 @@ export class SkillWatcher {
   /**
    * Start watching for file changes.
    *
-   * The skills directory is created when it does not exist yet: chokidar
-   * reports nothing, ever, for a path that is missing when watch() is called.
-   * Throws if the directory cannot be created.
+   * Creates the skills directory when it does not exist yet, so there is
+   * always a directory to watch (chokidar 4 reports nothing for a path that
+   * is missing when watch() is called). Throws if it cannot be created.
+   *
+   * Symbolic links below the skills directory are not followed, the same as
+   * in loadSkillsFromDirectory. The skills directory itself may be a link.
    */
   start(): void {
     if (this.isRunning) {
@@ -173,6 +179,12 @@ export class SkillWatcher {
     // Set new debounced timer
     const timer = setTimeout(async () => {
       this.debounceTimers.delete(filePath);
+
+      // Checked here, right before the load, and not only in the filter:
+      // loading a file behind a link would import code from outside skillsDir.
+      if (crossesSymlink(this.skillsDir, filePath)) {
+        return;
+      }
 
       try {
         const skillFile = await reloadSkill(filePath);

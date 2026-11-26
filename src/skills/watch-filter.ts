@@ -7,6 +7,7 @@
  * skills directory itself and decides here which paths it cares about.
  */
 
+import fs from 'fs';
 import path from 'path';
 
 export interface WatchFilterOptions {
@@ -14,13 +15,18 @@ export interface WatchFilterOptions {
   root: string;
   /** Globs for the files to report, relative to `root`. */
   patterns: string[];
-  /** Globs for files and directories to skip, relative to `root` or absolute. */
+  /**
+   * Globs for files and directories to skip. A relative glob is matched
+   * against the path relative to `root`, so the directories above `root`
+   * never count. An absolute glob is matched against the absolute path.
+   */
   ignored: string[];
 }
 
 /** The part of fs.Stats the filter needs. */
 export interface PathKind {
   isFile(): boolean;
+  isSymbolicLink?(): boolean;
 }
 
 /** Returns true when the watcher should skip the path. */
@@ -85,11 +91,17 @@ function matchesAny(matchers: RegExp[], value: string): boolean {
  * its stats. The `patterns` check runs only once a path is known to be a
  * file. Without that, directories would be skipped on the first call and
  * nothing below the root would ever be watched.
+ *
+ * A symbolic link below the root is skipped, as loadSkillsFromDirectory
+ * skips it, so the watcher does not walk into a linked directory.
  */
 export function createWatchFilter(options: WatchFilterOptions): WatchFilter {
   const root = path.resolve(options.root);
   const wanted = options.patterns.map(globToRegExp);
-  const unwanted = options.ignored.map(globToRegExp);
+  const relativeGlobs = options.ignored.filter((glob) => !path.isAbsolute(glob));
+  const absoluteGlobs = options.ignored.filter((glob) => path.isAbsolute(glob));
+  const unwantedBelowRoot = relativeGlobs.map(globToRegExp);
+  const unwantedAnywhere = absoluteGlobs.map(globToRegExp);
 
   return (candidatePath, stats) => {
     const absolutePath = path.resolve(candidatePath);
@@ -97,12 +109,52 @@ export function createWatchFilter(options: WatchFilterOptions): WatchFilter {
     if (relativePath === '') {
       return false;
     }
-
-    const absolutePosixPath = splitSegments(absolutePath).join('/');
-    if (matchesAny(unwanted, relativePath) || matchesAny(unwanted, absolutePosixPath)) {
+    if (stats?.isSymbolicLink?.() === true) {
+      return true;
+    }
+    if (
+      matchesAny(unwantedBelowRoot, relativePath) ||
+      matchesAny(unwantedAnywhere, splitSegments(absolutePath).join('/'))
+    ) {
       return true;
     }
 
     return stats?.isFile() === true && !matchesAny(wanted, relativePath);
   };
+}
+
+/**
+ * True when `candidatePath` is not a path below `root` that can be reached
+ * without going through a symbolic link (or a Windows junction). `root`
+ * itself may be a link. A path that cannot be checked counts as crossing
+ * one, so the caller leaves it alone.
+ *
+ * chokidar follows links by default and reports files behind them under the
+ * link's path. Loading such a file would import code from outside the skills
+ * directory, which loadSkillsFromDirectory never does.
+ */
+export function crossesSymlink(root: string, candidatePath: string): boolean {
+  const rootPath = path.resolve(root);
+  const relativePath = path.relative(rootPath, path.resolve(candidatePath));
+  const isOutsideRoot =
+    relativePath === '..' ||
+    relativePath.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relativePath);
+  if (relativePath === '' || isOutsideRoot) {
+    return true;
+  }
+
+  let currentPath = rootPath;
+  try {
+    for (const segment of relativePath.split(path.sep)) {
+      currentPath = path.join(currentPath, segment);
+      if (fs.lstatSync(currentPath).isSymbolicLink()) {
+        return true;
+      }
+    }
+  } catch {
+    // Gone or unreadable: it cannot be shown to be link-free.
+    return true;
+  }
+  return false;
 }

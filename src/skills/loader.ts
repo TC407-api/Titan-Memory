@@ -119,6 +119,52 @@ function validateMetadata(metadata: Record<string, unknown>): SkillMetadata {
   };
 }
 
+let importSequence = 0;
+
+/**
+ * Import a skill module so that an edited file is evaluated again.
+ *
+ * The query string makes the ES module loader treat the URL as a new module.
+ * That is not enough for a CommonJS file: Node serves it from require.cache,
+ * which is keyed by file name and ignores the query, so the old exports would
+ * come back. Its cache entry is dropped first. Modules the skill itself
+ * requires stay cached.
+ */
+async function importFresh(loadPath: string): Promise<unknown> {
+  try {
+    delete require.cache[require.resolve(loadPath)];
+  } catch {
+    // Not resolvable through require: nothing can be cached under that name.
+  }
+
+  importSequence += 1;
+  const fileUrl = pathToFileURL(loadPath).href;
+  return import(`${fileUrl}?t=${Date.now()}-${importSequence}`);
+}
+
+/**
+ * Find the skill in an imported module.
+ *
+ * import() of a CommonJS file puts its module.exports under `default`. So a
+ * skill assigned to module.exports is at `default`, and a compiled
+ * `export default skill` or `export const skill` is one level further down.
+ */
+function resolveSkillExport(loaded: unknown): TitanSkill | undefined {
+  const namespace = (loaded ?? {}) as Record<string, unknown>;
+  const commonJsExports = (namespace.default ?? {}) as Record<string, unknown>;
+  const candidates = [
+    namespace.default,
+    commonJsExports.default,
+    commonJsExports.skill,
+    namespace.skill,
+    namespace,
+  ];
+
+  return candidates.find(
+    (candidate) => typeof (candidate as Partial<TitanSkill> | undefined)?.execute === 'function'
+  ) as TitanSkill | undefined;
+}
+
 /**
  * Load a skill from a file path
  */
@@ -153,14 +199,11 @@ export async function loadSkillFromFile(filePath: string): Promise<SkillFile | n
         }
       }
 
-      // Dynamic import
-      const fileUrl = pathToFileURL(loadPath).href;
-      // Add cache buster for hot reload
-      const cacheBuster = `?t=${Date.now()}`;
-      const module = await import(fileUrl + cacheBuster);
+      // Dynamic import, evaluated again on every call so hot reload sees edits
+      const module = await importFresh(loadPath);
 
       // Get skill from default export or named export
-      const skill: TitanSkill = module.default || module.skill || module;
+      const skill = resolveSkillExport(module);
 
       if (!skill || typeof skill.execute !== 'function') {
         console.warn(`Invalid skill module: ${filePath} (missing execute function)`);

@@ -2,11 +2,31 @@
  * Tests for the skill watcher's path filter (src/skills/watch-filter.ts)
  */
 
+import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
-import { createWatchFilter, globToRegExp, PathKind } from '../src/skills/watch-filter';
+import {
+  createWatchFilter,
+  crossesSymlink,
+  globToRegExp,
+  PathKind,
+} from '../src/skills/watch-filter';
 
 const FILE: PathKind = { isFile: () => true };
 const DIRECTORY: PathKind = { isFile: () => false };
+const LINK: PathKind = { isFile: () => false, isSymbolicLink: () => true };
+const REAL_FILE: PathKind = { isFile: () => true, isSymbolicLink: () => false };
+
+/** See tryLink in skill-watcher.test.ts: false means Windows refused a file link. */
+function tryLink(target: string, linkPath: string, kind: 'dir' | 'file'): boolean {
+  try {
+    fs.symlinkSync(target, linkPath, kind === 'dir' ? 'junction' : 'file');
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EPERM') return false;
+    throw error;
+  }
+}
 
 const DEFAULT_PATTERNS = ['**/*.ts', '**/*.js', '**/*.skill.md'];
 const DEFAULT_IGNORED = ['**/node_modules/**', '**/.disabled/**', '**/dist/**', '**/*.d.ts'];
@@ -144,6 +164,31 @@ describe('createWatchFilter', () => {
     expect(skipDrafts(inRoot('custom', 'a.skill.md'), FILE)).toBe(false);
   });
 
+  it('applies relative ignored globs below the root only', () => {
+    for (const parent of ['dist', 'node_modules', '.disabled']) {
+      const nestedRoot = path.resolve(parent, 'tenant', 'skills');
+      const skip = createWatchFilter({
+        root: nestedRoot,
+        patterns: DEFAULT_PATTERNS,
+        ignored: DEFAULT_IGNORED,
+      });
+
+      expect(skip(nestedRoot)).toBe(false);
+      expect(skip(path.join(nestedRoot, 'sample.skill.md'))).toBe(false);
+      expect(skip(path.join(nestedRoot, 'sample.skill.md'), FILE)).toBe(false);
+      expect(skip(path.join(nestedRoot, 'custom'), DIRECTORY)).toBe(false);
+      expect(skip(path.join(nestedRoot, 'custom', 'a.ts'), FILE)).toBe(false);
+      expect(skip(path.join(nestedRoot, parent, 'a.skill.md'), FILE)).toBe(true);
+    }
+  });
+
+  it('skips symbolic links below the root, but not the root', () => {
+    expect(shouldSkip(inRoot('linked-dir'), LINK)).toBe(true);
+    expect(shouldSkip(inRoot('custom', 'linked.skill.md'), LINK)).toBe(true);
+    expect(shouldSkip(inRoot('custom', 'real.skill.md'), REAL_FILE)).toBe(false);
+    expect(shouldSkip(root, LINK)).toBe(false);
+  });
+
   it('takes patterns relative to the root', () => {
     const onlyCustom = createWatchFilter({
       root,
@@ -154,5 +199,65 @@ describe('createWatchFilter', () => {
     expect(onlyCustom(inRoot('custom', 'team', 'a.skill.md'), FILE)).toBe(false);
     expect(onlyCustom(inRoot('a.skill.md'), FILE)).toBe(true);
     expect(onlyCustom(inRoot('custom', 'a.ts'), FILE)).toBe(true);
+  });
+});
+
+describe('crossesSymlink', () => {
+  let tempRoot: string;
+  let root: string;
+  let outside: string;
+
+  beforeEach(() => {
+    tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'titan-watch-filter-'));
+    root = path.join(tempRoot, 'skills');
+    outside = path.join(tempRoot, 'outside');
+    fs.mkdirSync(path.join(root, 'custom'), { recursive: true });
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(root, 'custom', 'real.skill.md'), 'x');
+    fs.writeFileSync(path.join(outside, 'external.js'), 'x');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  it('is false for a real file below the root', () => {
+    expect(crossesSymlink(root, path.join(root, 'custom', 'real.skill.md'))).toBe(false);
+  });
+
+  it('is true for a file inside a linked directory', () => {
+    expect(tryLink(outside, path.join(root, 'linked'), 'dir')).toBe(true);
+
+    expect(crossesSymlink(root, path.join(root, 'linked', 'external.js'))).toBe(true);
+  });
+
+  it('is true for a linked file', () => {
+    const linkPath = path.join(root, 'custom', 'linked.js');
+    if (!tryLink(path.join(outside, 'external.js'), linkPath, 'file')) {
+      // Windows without the privilege to create file links: nothing to check.
+      return;
+    }
+
+    expect(crossesSymlink(root, linkPath)).toBe(true);
+  });
+
+  it('is false below a root that is itself a link', () => {
+    const linkedRoot = path.join(tempRoot, 'skills-link');
+    expect(tryLink(root, linkedRoot, 'dir')).toBe(true);
+
+    expect(crossesSymlink(linkedRoot, path.join(linkedRoot, 'custom', 'real.skill.md'))).toBe(false);
+  });
+
+  it('is true for a path outside the root, the root itself and a missing file', () => {
+    expect(crossesSymlink(root, path.join(outside, 'external.js'))).toBe(true);
+    expect(crossesSymlink(root, path.join(root, '..', 'outside', 'external.js'))).toBe(true);
+    expect(crossesSymlink(root, root)).toBe(true);
+    expect(crossesSymlink(root, path.join(root, 'custom', 'gone.skill.md'))).toBe(true);
+  });
+
+  it('does not mistake a name that starts with two dots for a parent path', () => {
+    fs.writeFileSync(path.join(root, '..hidden.skill.md'), 'x');
+
+    expect(crossesSymlink(root, path.join(root, '..hidden.skill.md'))).toBe(false);
   });
 });

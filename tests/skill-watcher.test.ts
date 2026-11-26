@@ -39,6 +39,22 @@ function writePlainFile(dir: string, fileName: string): string {
   return file;
 }
 
+/**
+ * Link `linkPath` to `target`. A directory link is a junction on Windows,
+ * which needs no privilege. A file link on Windows needs Developer Mode or
+ * an elevated shell; without it this returns false and the caller goes on
+ * with the directory link only. Linux and macOS always create both.
+ */
+function tryLink(target: string, linkPath: string, kind: 'dir' | 'file'): boolean {
+  try {
+    fs.symlinkSync(target, linkPath, kind === 'dir' ? 'junction' : 'file');
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EPERM') return false;
+    throw error;
+  }
+}
+
 async function waitFor(check: () => boolean, what: string): Promise<void> {
   const deadline = Date.now() + EVENT_TIMEOUT_MS;
   while (Date.now() < deadline) {
@@ -171,6 +187,39 @@ describe('SkillWatcher file events (end to end)', () => {
     const warned = warnSpy.mock.calls.map((call) => String(call[0])).join('\n');
     expect(warned).not.toContain('types.d.ts');
     expect(warned).not.toContain('notes.txt');
+  }, 30000);
+
+  it('watches a skills directory that sits below directories named like ignored ones', async () => {
+    // The default ignore globs apply below the skills directory, not to the
+    // directories above it.
+    skillsDir = path.join(tempRoot, 'dist', 'node_modules', 'tenant', 'skills');
+
+    startWatcher();
+    const probe = await primeWatcher();
+
+    expect(getSkillRegistry().has(probe)).toBe(true);
+  }, 30000);
+
+  it('does not load skills that are reached through a symbolic link', async () => {
+    const outside = path.join(tempRoot, 'outside');
+    skillsDir = path.join(tempRoot, 'skills');
+    writeSkillFile(outside, 'behind-dir-link');
+    const linkedFileTarget = writeSkillFile(path.join(tempRoot, 'elsewhere'), 'behind-file-link');
+    startWatcher();
+    await primeWatcher();
+
+    expect(tryLink(outside, path.join(skillsDir, 'linked'), 'dir')).toBe(true);
+    tryLink(linkedFileTarget, path.join(skillsDir, 'direct-link.skill.md'), 'file');
+    await sleep(SETTLE_MS);
+    writeSkillFile(outside, 'added-behind-dir-link');
+    writeSkillFile(skillsDir, 'kept-skill');
+    await waitFor(() => names('loaded').includes('kept-skill'), "'loaded' for kept-skill");
+    await sleep(SETTLE_MS);
+
+    expect(names('loaded').filter((n) => !n.startsWith('probe-'))).toEqual(['kept-skill']);
+    expect(getSkillRegistry().has('behind-dir-link')).toBe(false);
+    expect(getSkillRegistry().has('behind-file-link')).toBe(false);
+    expect(getSkillRegistry().has('added-behind-dir-link')).toBe(false);
   }, 30000);
 
   it('honours custom patterns and ignored options', async () => {
