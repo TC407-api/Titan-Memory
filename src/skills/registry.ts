@@ -23,8 +23,10 @@ export class SkillRegistry {
   // with `enabled: false`. A name stays here, also while nothing is
   // registered under it, until enable() is called for it. Only names are
   // kept, never files: enable() and disable() take a name, and each changes
-  // the state of that one name only.
-  private disabledNames: Set<string> = new Set();
+  // the state of that one name only. Each name maps to the id of the disable
+  // in force (see getDisableId()).
+  private disabledNames: Map<string, number> = new Map();
+  private nextDisableId = 1;
 
   /**
    * Register a skill.
@@ -52,7 +54,7 @@ export class SkillRegistry {
 
     // Decided after that unregister, whose listeners can call enable().
     if (!file.enabled) {
-      this.disabledNames.add(name);
+      this.markDisabled(name);
     }
     file.enabled = !this.disabledNames.has(name);
 
@@ -186,8 +188,27 @@ export class SkillRegistry {
     const entry = this.skills.get(name);
     if (!entry) return false;
     entry.file.enabled = false;
-    this.disabledNames.add(name);
+    this.markDisabled(name);
     return true;
+  }
+
+  /** Disable a name that is not disabled yet, under a new disable id. */
+  private markDisabled(name: string): void {
+    if (!this.disabledNames.has(name)) {
+      this.disabledNames.set(name, this.nextDisableId++);
+    }
+  }
+
+  /**
+   * The id of the disable in force for the name, or undefined when the name
+   * is not disabled. A name gets a new id each time it goes from enabled to
+   * disabled; disabling it again while it is disabled keeps the id. So when
+   * the id read earlier is still the one in force, enable() has not been
+   * called for the name since, and a disable made after an enable() cannot
+   * be taken for the earlier one.
+   */
+  getDisableId(name: string): number | undefined {
+    return this.disabledNames.get(name);
   }
 
   /**

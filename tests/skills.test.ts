@@ -265,6 +265,23 @@ describe('Skill System', () => {
       expect(registry.isEnabled('shared-name')).toBe(true);
     });
 
+    it('should give a name a new disable id only when it goes from enabled to disabled', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'counted'));
+      expect(registry.getDisableId('counted')).toBeUndefined();
+
+      registry.disable('counted');
+      const first = registry.getDisableId('counted');
+      registry.disable('counted');
+      registry.register(fileAt('/skills/a.skill.md', 'counted'));
+      expect(first).toBeDefined();
+      expect(registry.getDisableId('counted')).toBe(first);
+
+      registry.enable('counted');
+      expect(registry.getDisableId('counted')).toBeUndefined();
+      registry.disable('counted');
+      expect(registry.getDisableId('counted')).not.toBe(first);
+    });
+
     it('should not change other names when disable() or enable() is called for one', () => {
       registry.register(fileAt('/skills/a.skill.md', 'report'));
       registry.register(fileAt('/skills/b.skill.md', 'summary'));

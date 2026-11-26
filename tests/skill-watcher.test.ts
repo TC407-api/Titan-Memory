@@ -877,21 +877,97 @@ describe('SkillWatcher file events (end to end)', () => {
     expect(getSkillRegistry().isEnabled('after-name')).toBe(false);
   }, 30000);
 
-  it('carries a disable to the new name when a save renames the skill, and keeps the old name disabled', async () => {
+  /** Front matter for a skill named `name`, with `body` after it. */
+  const skillText = (name: string, body = 'body'): string =>
+    `---\nname: ${name}\ntriggers: [${name}]\n---\n${body}\n`;
+
+  /** Rewrite `file` as the skill `name` and wait until the watcher has registered that name from it. */
+  async function renameAndWait(file: string, name: string): Promise<void> {
+    const reloadsBefore = names('reloaded').filter((n) => n === name).length;
+    fs.writeFileSync(file, skillText(name, `now ${name}`));
+    await waitFor(
+      () => names('reloaded').filter((n) => n === name).length > reloadsBefore,
+      `a new 'reloaded' for ${name}`
+    );
+  }
+
+  it('moves a disable to the new name when a save renames the skill', async () => {
     startWatcher();
     const file = writeSkillFile(skillsDir, 'first-title');
     await waitFor(() => names('loaded').includes('first-title'), "'loaded' for first-title");
     getSkillRegistry().disable('first-title');
 
-    fs.writeFileSync(file, '---\nname: second-title\ntriggers: [second-title]\n---\nrenamed\n');
-    await waitFor(() => getSkillRegistry().has('second-title'), 'second-title registered');
+    await renameAndWait(file, 'second-title');
 
     expect(getSkillRegistry().isEnabled('second-title')).toBe(false);
-    expect(getSkillRegistry().isNameDisabled('first-title')).toBe(true);
+    expect(getSkillRegistry().isNameDisabled('first-title')).toBe(false);
     // The disable stays with the file through a later save under the new name.
-    fs.writeFileSync(file, '---\nname: second-title\ntriggers: [second-title]\n---\nedited\n');
+    fs.writeFileSync(file, skillText('second-title', 'edited'));
     await waitFor(() => names('reloaded').filter((n) => n === 'second-title').length >= 2, "a second 'reloaded'");
     expect(getSkillRegistry().isEnabled('second-title')).toBe(false);
+  }, 30000);
+
+  it('keeps a disable through a chain of renames', async () => {
+    startWatcher();
+    const file = writeSkillFile(skillsDir, 'daily');
+    await waitFor(() => names('loaded').includes('daily'), "'loaded' for daily");
+    getSkillRegistry().disable('daily');
+
+    await renameAndWait(file, 'weekly');
+    await renameAndWait(file, 'monthly');
+
+    expect(getSkillRegistry().isEnabled('monthly')).toBe(false);
+    expect(getSkillRegistry().isNameDisabled('daily')).toBe(false);
+    expect(getSkillRegistry().isNameDisabled('weekly')).toBe(false);
+  }, 30000);
+
+  it('keeps an enable() of the new name through a rename back and a save', async () => {
+    startWatcher();
+    const file = writeSkillFile(skillsDir, 'daily');
+    await waitFor(() => names('loaded').includes('daily'), "'loaded' for daily");
+    getSkillRegistry().disable('daily');
+    await renameAndWait(file, 'weekly');
+    expect(getSkillRegistry().enable('weekly')).toBe(true);
+
+    fs.writeFileSync(file, skillText('weekly', 'saved again'));
+    await waitFor(() => names('reloaded').filter((n) => n === 'weekly').length >= 2, "a second 'reloaded' for weekly");
+    expect(getSkillRegistry().isEnabled('weekly')).toBe(true);
+
+    await renameAndWait(file, 'daily');
+    expect(getSkillRegistry().isEnabled('daily')).toBe(true);
+  }, 30000);
+
+  it('carries a disable when a save renames the skill to a name registered by something else from the same file', async () => {
+    startWatcher();
+    const file = writeSkillFile(skillsDir, 'daily');
+    await waitFor(() => names('loaded').includes('daily'), "'loaded' for daily");
+    getSkillRegistry().disable('daily');
+    // Enabled, without hooks, from the same file, by something other than the watcher.
+    const alias = codeSkillFile(file, 'alias', ['alias']);
+    getSkillRegistry().register(alias);
+
+    await renameAndWait(file, 'alias');
+
+    expect(getSkillRegistry().getFile('alias')).not.toBe(alias);
+    expect(getSkillRegistry().isEnabled('alias')).toBe(false);
+  }, 30000);
+
+  it('does not carry a disable that enable() lifted, after another file disables the name again', async () => {
+    startWatcher();
+    const fileA = writeSkillFile(skillsDir, 'daily');
+    await waitFor(() => names('loaded').includes('daily'), "'loaded' for daily");
+    getSkillRegistry().disable('daily');
+    fs.rmSync(fileA);
+    await waitFor(() => names('unloaded').includes('daily'), "'unloaded' for daily");
+    expect(getSkillRegistry().enable('daily')).toBe(false);
+    getSkillRegistry().register(codeSkillFile(path.join(skillsDir, 'b.js'), 'daily', ['daily']));
+    expect(getSkillRegistry().disable('daily')).toBe(true);
+
+    fs.writeFileSync(fileA, skillText('weekly'));
+    await waitFor(() => getSkillRegistry().has('weekly'), 'weekly registered');
+
+    expect(getSkillRegistry().isEnabled('weekly')).toBe(true);
+    expect(getSkillRegistry().isEnabled('daily')).toBe(false);
   }, 30000);
 
   it('does not carry a disable that enable() lifted while the file was broken', async () => {

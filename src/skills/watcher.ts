@@ -55,6 +55,13 @@ interface FileLoad {
   replaced?: SkillFile;
 }
 
+/** The watcher's disabled skill from a file, as the watcher unregistered it. */
+interface UnloadRecord {
+  name: string;
+  /** The registry's id of the disable that was in force (getDisableId()). */
+  disableId: number;
+}
+
 /** Stands in for fs.Stats when a path is already known to be a file. */
 const FILE_KIND: PathKind = { isFile: () => true };
 
@@ -105,11 +112,14 @@ function isRegularFile(filePath: string): boolean {
  *
  * Disabled skills: the registry keeps a disable per skill name (see
  * SkillRegistry.register()), so a reload under the same name stays
- * disabled. When a file the watcher loaded under a disabled name comes back
- * under another name (an edit, also after a broken save or a delete and
- * re-add of the file), the disable follows the file to the new name. The
- * old name stays disabled too, as only enable() lifts a disable, and an
- * enable() of the old name before the file comes back lifts both.
+ * disabled. When the watcher's skill from a file was disabled as it was
+ * unregistered, and the watcher next registers a skill from that file under
+ * another name (an edit, also after a broken save, a delete and re-add of
+ * the file, or stop() and start()), the disable moves to the new name: the
+ * new skill is disabled and the old name is enabled again, unless a skill
+ * is registered under it. This happens only while that same disable is in
+ * force (see SkillRegistry.getDisableId()): after an enable() of the old
+ * name, a later disable of it, from any file, does not move.
  *
  * The watcher unloads only skills it loaded: when a file is deleted, broken,
  * renamed inside or replaced by a link, and on stop(). Each unload removes
@@ -174,12 +184,11 @@ export class SkillWatcher {
   private callbacks: Map<WatcherEvent, WatcherCallback[]> = new Map();
   // What this watcher has registered, by file path. See stop().
   private ownedFiles: Map<string, SkillFile> = new Map();
-  // For each file, the name the watcher's skill from it had when the watcher
-  // unregistered that skill, and whether it was disabled then. Kept, also
-  // through stop(), until the watcher next registers a skill from that file,
-  // so that a disable can follow the file to a new skill name (see
-  // carryDisable()).
-  private lastUnloaded: Map<string, { name: string; isDisabled: boolean }> = new Map();
+  // For each file whose skill the watcher unregistered while it was
+  // disabled: its name and the disable id then in force. Kept, also through
+  // stop(), until the watcher next registers a skill from that file, so that
+  // a disable can follow the file to a new skill name (see carryDisable()).
+  private lastUnloaded: Map<string, UnloadRecord> = new Map();
   // Files not loaded because their skill name is registered from another
   // file, with that name. reconcile() loads them again once it is free.
   private refusedFiles: Map<string, string> = new Map();
@@ -334,9 +343,9 @@ export class SkillWatcher {
     this.ownedFiles.clear();
     for (const skillFile of owned) {
       const name = skillFile.metadata.name;
-      if (registry.getFile(name) === skillFile) {
-        this.rememberUnloaded(skillFile);
-        if (registry.unregister(name)) this.emit('unloaded', name, skillFile.path);
+      this.recordUnload(skillFile);
+      if (registry.getFile(name) === skillFile && registry.unregister(name)) {
+        this.emit('unloaded', name, skillFile.path);
       }
     }
   }
@@ -514,6 +523,12 @@ export class SkillWatcher {
     const { eventType, filePath, generation } = load;
     const registry = getSkillRegistry();
     const name = skillFile.metadata.name;
+    // Only the watcher's own earlier version leaves a record; a skill that
+    // something else registered from the file says nothing about the file's
+    // disable.
+    if (load.replaced && this.ownedFiles.get(filePath) === load.replaced) {
+      this.recordUnload(load.replaced);
+    }
     const hasDroppedPrevious = this.dropRegistered(load.replaced);
     const owner = registry.getFile(name);
     if (owner || generation !== this.generation) {
@@ -526,7 +541,7 @@ export class SkillWatcher {
       }
       return;
     }
-    this.carryDisable(skillFile);
+    const carried = this.carryDisable(skillFile);
     registry.register(skillFile);
     if (registry.getFile(name) !== skillFile) {
       return; // A registry listener replaced or removed it during the register.
@@ -538,6 +553,7 @@ export class SkillWatcher {
     this.ownedFiles.set(filePath, skillFile);
     // Carried over or not, the record is used up: it never applies to a later load.
     this.lastUnloaded.delete(filePath);
+    if (carried) this.releaseOldName(carried);
     this.emit(eventType === 'add' ? 'loaded' : 'reloaded', name, filePath);
   }
 
@@ -565,34 +581,54 @@ export class SkillWatcher {
     if (this.ownedFiles.get(skillFile.path) === skillFile) {
       this.ownedFiles.delete(skillFile.path);
     }
-    this.rememberUnloaded(skillFile);
     return registry.unregister(skillFile.metadata.name);
   }
 
-  /** Remember the name and state of a skill from a file as it is unregistered (see carryDisable()). */
-  private rememberUnloaded(skillFile: SkillFile): void {
-    this.lastUnloaded.set(skillFile.path, {
-      name: skillFile.metadata.name,
-      isDisabled: !skillFile.enabled,
-    });
+  /**
+   * Record the watcher's own skill from a file as the watcher unregisters it:
+   * when it is the registered one and disabled, its name and the id of the
+   * disable in force (see carryDisable()). Otherwise the file has no record.
+   */
+  private recordUnload(skillFile: SkillFile): void {
+    const registry = getSkillRegistry();
+    const name = skillFile.metadata.name;
+    const isRegistered = registry.getFile(name) === skillFile;
+    const disableId = isRegistered && !skillFile.enabled ? registry.getDisableId(name) : undefined;
+    if (disableId === undefined) {
+      this.lastUnloaded.delete(skillFile.path);
+    } else {
+      this.lastUnloaded.set(skillFile.path, { name, disableId });
+    }
   }
 
   /**
-   * Let a disable follow a file to a new skill name. When the skill last
-   * unregistered from this file had another name, was disabled then, and
-   * that name is still disabled (no enable() since), `skillFile` is
-   * registered as disabled, which disables its name too. The old name stays
-   * disabled as well: only enable() lifts a disable.
+   * Let a disable follow a file to a new skill name. When the watcher's last
+   * skill from this file was disabled under another name, and that disable
+   * is still in force (the same disable id: no enable() since), `skillFile`
+   * is registered as disabled. Returns the record it carried, if any.
    */
-  private carryDisable(skillFile: SkillFile): void {
+  private carryDisable(skillFile: SkillFile): UnloadRecord | undefined {
     const previous = this.lastUnloaded.get(skillFile.path);
     if (
-      previous &&
-      previous.name !== skillFile.metadata.name &&
-      previous.isDisabled &&
-      getSkillRegistry().isNameDisabled(previous.name)
+      !previous ||
+      previous.name === skillFile.metadata.name ||
+      getSkillRegistry().getDisableId(previous.name) !== previous.disableId
     ) {
-      skillFile.enabled = false;
+      return undefined;
+    }
+    skillFile.enabled = false;
+    return previous;
+  }
+
+  /**
+   * After a disable moved to a file's new skill name: lift it from the old
+   * name, unless a skill is registered under that name or the disable in
+   * force is no longer the one that moved.
+   */
+  private releaseOldName(previous: UnloadRecord): void {
+    const registry = getSkillRegistry();
+    if (!registry.has(previous.name) && registry.getDisableId(previous.name) === previous.disableId) {
+      registry.enable(previous.name);
     }
   }
 
@@ -604,7 +640,9 @@ export class SkillWatcher {
   private unloadFile(filePath: string): void {
     const owned = this.ownedFiles.get(filePath);
     this.ownedFiles.delete(filePath);
-    if (owned && this.dropRegistered(owned)) {
+    if (!owned) return;
+    this.recordUnload(owned);
+    if (this.dropRegistered(owned)) {
       this.emit('unloaded', owned.metadata.name, filePath);
     }
   }
