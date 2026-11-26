@@ -457,22 +457,25 @@ describe('SkillWatcher file events (end to end)', () => {
     expect(names('unloaded')).toEqual([]);
   }, 30000);
 
-  // Windows and macOS file systems ignore case by default.
-  const itWhereCaseIsIgnored =
-    process.platform === 'win32' || process.platform === 'darwin' ? it : it.skip;
+  it('registers nothing when a registry listener stops it during the register', async () => {
+    const started = startWatcher();
+    const registry = getSkillRegistry();
+    const stopOnLoad: Parameters<typeof registry.addEventListener>[0] = (event) => {
+      if (event.type === 'skill:loaded' && event.name === 'stopped-in-register') {
+        void started.stop();
+      }
+    };
+    registry.addEventListener(stopOnLoad);
+    try {
+      writeSkillFile(skillsDir, 'stopped-in-register');
+      await waitFor(() => !started.isWatching(), 'the watcher to be stopped');
+      await sleep(SETTLE_MS);
 
-  itWhereCaseIsIgnored('treats two spellings of a path that differ in case as one file', async () => {
-    const file = writeSkillFile(skillsDir, 'report');
-    const otherCase = path.join(skillsDir, 'REPORT.skill.md');
-    const preloaded = await loadSkillFromFile(otherCase);
-    getSkillRegistry().register(preloaded!);
-    startWatcher();
-    await waitFor(() => names('loaded').includes('report'), "'loaded' for report");
-    expect(errorsFor(file)).toEqual([]);
-
-    fs.rmSync(file);
-    await waitFor(() => names('unloaded').includes('report'), "'unloaded' for report");
-    expect(getSkillRegistry().has('report')).toBe(false);
+      expect(registry.has('stopped-in-register')).toBe(false);
+      expect(names('loaded')).toEqual([]);
+    } finally {
+      registry.removeEventListener(stopOnLoad);
+    }
   }, 30000);
 
   it('does not read through a skills directory that has become a link since start()', async () => {
