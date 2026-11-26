@@ -33,6 +33,11 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Jest compiles chokidar (ES modules only) to CommonJS, so the tests do not
+      # show whether the built CommonJS output can require() the real package.
+      - name: Load the built watcher
+        run: node scripts/smoke-skill-watcher.js
+
       - name: Security audit
         run: npm audit --audit-level=high --omit=dev
 
