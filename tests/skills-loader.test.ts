@@ -496,6 +496,34 @@ describe('loadSkillFromFile — a .skill.md path that is not a regular file', ()
   }, 15000);
 });
 
+describe('loadSkillFromFile — throwFileSystemErrors', () => {
+  it('should throw a file system error only when asked to, and still return null for content that is not a skill', async () => {
+    const dir = makeTempDir('md-busy');
+    const filePath = writeSkillMd(dir, 'busy.skill.md', '---\nname: busy-skill\ntriggers: [busy]\n---\n');
+    const nodeFs = jest.requireActual<typeof fs>('fs');
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const openSpy = jest.spyOn(nodeFs, 'openSync').mockImplementation(() => {
+      throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY', syscall: 'open' });
+    });
+    try {
+      await expect(loadSkillFromFile(filePath)).resolves.toBeNull();
+      await expect(loadSkillFromFile(filePath, { throwFileSystemErrors: true })).rejects.toMatchObject({
+        code: 'EBUSY',
+      });
+      openSpy.mockRestore();
+
+      fs.writeFileSync(filePath, 'no frontmatter, so not a skill\n');
+      await expect(loadSkillFromFile(filePath, { throwFileSystemErrors: true })).resolves.toBeNull();
+    } finally {
+      openSpy.mockRestore();
+      errorSpy.mockRestore();
+      warnSpy.mockRestore();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 // ===========================================================================
 // loadSkillsFromDirectory — custom options
 // ===========================================================================

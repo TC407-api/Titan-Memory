@@ -144,10 +144,29 @@ function readRegularFileText(filePath: string): string | null {
   }
 }
 
+export interface LoadSkillOptions {
+  /**
+   * Throw a file system error (one with a `code`, from stat, open or read)
+   * instead of returning null, so a caller can tell a file that could not
+   * be read right now from one whose content is not a skill. Default false.
+   */
+  throwFileSystemErrors?: boolean;
+}
+
+/** True for an error from a file system call (it has a string `code` and a `syscall`). */
+function isFileSystemError(error: unknown): error is NodeJS.ErrnoException {
+  const candidate = error as NodeJS.ErrnoException | null;
+  return typeof candidate?.code === 'string' && typeof candidate.syscall === 'string';
+}
+
 /**
- * Load a skill from a file path
+ * Load a skill from a file path. Returns null when the file is not a skill
+ * or cannot be loaded; see LoadSkillOptions for file system errors.
  */
-export async function loadSkillFromFile(filePath: string): Promise<SkillFile | null> {
+export async function loadSkillFromFile(
+  filePath: string,
+  options: LoadSkillOptions = {}
+): Promise<SkillFile | null> {
   try {
     const absolutePath = path.resolve(filePath);
 
@@ -251,6 +270,9 @@ export async function loadSkillFromFile(filePath: string): Promise<SkillFile | n
     console.warn(`Unsupported skill file format: ${filePath}`);
     return null;
   } catch (error) {
+    if (options.throwFileSystemErrors && isFileSystemError(error)) {
+      throw error;
+    }
     console.error(`Error loading skill from ${filePath}:`, error);
     return null;
   }

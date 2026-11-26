@@ -52,6 +52,8 @@ interface FileLoad {
   filePath: string;
   /** The run the load was started in. */
   generation: number;
+  /** The registry in use when the load began to change it. */
+  registry: SkillRegistry;
   /** What was registered from this file under the new name, if anything. */
   replaced?: SkillFile;
 }
@@ -152,9 +154,10 @@ function pathExists(filePath: string): boolean {
  * without a link (see reconcile()), and unloads one that does not. A path
  * that cannot be checked (an error other than a missing entry) is not
  * taken for gone: that check leaves the skill and looks again on its next
- * pass. A file event for such a path unloads the skill, as its new content
- * cannot be read safely, and the watcher loads the file again once the
- * path can be checked.
+ * pass. A file event for such a path, or for a file that cannot be read
+ * just now (the loader's stat, open or read fails), unloads the skill, as
+ * its new content is not known, and the watcher loads the file again once
+ * it can be checked and read.
  *
  * File paths are compared as strings, spelled as the watcher reports them
  * (below skillsDir as given), as the loader and the registry do. A skill
@@ -195,9 +198,9 @@ export class SkillWatcher {
   // Files not loaded because their skill name is registered from another
   // file, with that name. reconcile() loads them again once it is free.
   private refusedFiles: Map<string, string> = new Map();
-  // Files whose path could not be checked when an event for them was
+  // Files that could not be checked or read when an event for them was
   // handled (an error other than a missing entry). Their skill was unloaded;
-  // reconcile() loads them again once the path can be checked.
+  // reconcile() loads them again (see holdUnreadableFile()).
   private uncertainFiles: Set<string> = new Set();
   private reconcileTimer: NodeJS.Timeout | null = null;
   private isRunning = false;
@@ -501,27 +504,34 @@ export class SkillWatcher {
     const wasUncertain = this.uncertainFiles.delete(filePath);
     const state = inspectPath(this.root, filePath);
     if (state === 'unknown') {
-      // Not known to be safe to read: unloaded until reconcile() can check it.
-      this.unloadFile(filePath);
-      this.uncertainFiles.add(filePath);
-      if (!wasUncertain) {
-        const reason = `${filePath} could not be checked; it is tried again every second`;
-        this.emit('error', filePath, filePath, new Error(`Skill not loaded: ${reason}`));
-      }
+      this.holdUnreadableFile(filePath, wasUncertain, 'could not be checked');
       return;
     }
-    if (state === 'link' || state === 'missing') {
-      // A link now, or below one, or deleted since the event.
+    if (state !== 'file') {
+      // A link now, or below one, deleted since the event, or not a regular
+      // file (a directory, a FIFO): never handed to the loader.
       this.dropUnreachableFile(filePath, state);
       return;
     }
 
     // A stop() (from a listener, say) while this load waits ends its run.
     const generation = this.generation;
-    const skillFile = await loadSkillFromFile(filePath);
+    let skillFile: SkillFile | null;
+    try {
+      skillFile = await loadSkillFromFile(filePath, { throwFileSystemErrors: true });
+    } catch (error) {
+      if (generation === this.generation) {
+        const code = (error as NodeJS.ErrnoException).code;
+        this.holdUnreadableFile(filePath, wasUncertain, `could not be read (${code})`);
+      }
+      return;
+    }
     if (generation !== this.generation) {
       return;
     }
+    // The registry in use now. A listener of the unload below can replace it
+    // (resetSkillRegistry()); then this load registers nothing.
+    const registry = getSkillRegistry();
     // What this load may replace, taken before any listener runs.
     const replaced = this.findReplaceable(skillFile, filePath);
     // The version this watcher loaded from this file goes when the new one
@@ -530,8 +540,23 @@ export class SkillWatcher {
     if (owned && owned.metadata.name !== skillFile?.metadata.name) {
       this.unloadFile(filePath);
     }
-    if (skillFile && generation === this.generation) {
-      this.registerUnlessTaken(skillFile, { eventType, filePath, generation, replaced });
+    if (skillFile && generation === this.generation && getSkillRegistry() === registry) {
+      this.registerUnlessTaken(skillFile, { eventType, filePath, generation, registry, replaced });
+    }
+  }
+
+  /**
+   * `filePath` could not be checked or read just now (an error other than a
+   * missing entry). Its new content is not known, so the watcher's skill
+   * from it is unloaded, and reconcile() loads it again once it can be
+   * checked and read. Reported with one 'error' event, not one per retry.
+   */
+  private holdUnreadableFile(filePath: string, wasUncertain: boolean, what: string): void {
+    this.unloadFile(filePath);
+    this.uncertainFiles.add(filePath);
+    if (!wasUncertain) {
+      const reason = `${filePath} ${what}; it is tried again every second`;
+      this.emit('error', filePath, filePath, new Error(`Skill not loaded: ${reason}`));
     }
   }
 
@@ -548,8 +573,7 @@ export class SkillWatcher {
    * what a listener registered is left alone.
    */
   private registerUnlessTaken(skillFile: SkillFile, load: FileLoad): void {
-    const { eventType, filePath, generation } = load;
-    const registry = getSkillRegistry();
+    const { eventType, filePath, generation, registry } = load;
     const name = skillFile.metadata.name;
     const isCurrent = (): boolean =>
       generation === this.generation && getSkillRegistry() === registry;

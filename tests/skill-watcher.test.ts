@@ -1043,6 +1043,30 @@ describe('SkillWatcher file events (end to end)', () => {
     expect(registry.isEnabled('weekly')).toBe(false);
   }, 30000);
 
+  it('registers nothing when a listener replaces the registry while a rename unloads the old name', async () => {
+    startWatcher();
+    const file = writeSkillFile(skillsDir, 'daily');
+    await waitFor(() => names('loaded').includes('daily'), "'loaded' for daily");
+    const original = getSkillRegistry();
+    original.disable('daily');
+    const resetOnUnload: Parameters<typeof original.addEventListener>[0] = (event) => {
+      if (event.type === 'skill:unloaded' && event.name === 'daily') resetSkillRegistry();
+    };
+    original.addEventListener(resetOnUnload);
+    try {
+      fs.writeFileSync(file, skillText('weekly'));
+      await waitFor(() => names('unloaded').includes('daily'), "'unloaded' for daily");
+      await sleep(SETTLE_MS);
+    } finally {
+      original.removeEventListener(resetOnUnload);
+    }
+
+    expect(names('reloaded')).toEqual([]);
+    expect(getSkillRegistry()).not.toBe(original);
+    expect(getSkillRegistry().has('weekly')).toBe(false);
+    expect(original.has('weekly')).toBe(false);
+  }, 30000);
+
   it('does not report or own a reload when a listener replaces the registry during it', async () => {
     startWatcher();
     const file = writeSkillFile(skillsDir, 'swapped-registry');
@@ -1096,6 +1120,32 @@ describe('SkillWatcher file events (end to end)', () => {
       await waitFor(() => getSkillRegistry().has('flaky-check'), 'flaky-check registered');
       await sleep(1500);
       expect(getSkillRegistry().has('flaky-check')).toBe(true);
+    }, 30000);
+
+    it('loads a changed file again once it can be read', async () => {
+      startWatcher();
+      const file = await addAndWaitForLoad(skillsDir, 'flaky-read');
+      const realOpen = nodeFs.openSync.bind(nodeFs);
+      let isBusy = true;
+      const openSpy = jest.spyOn(nodeFs, 'openSync').mockImplementation(((target: fs.PathLike, ...rest: unknown[]) => {
+        if (isBusy && path.resolve(String(target)) === file) {
+          throw Object.assign(new Error(`EBUSY: resource busy or locked, open '${String(target)}'`), {
+            code: 'EBUSY',
+            syscall: 'open',
+          });
+        }
+        return (realOpen as (...args: unknown[]) => number)(target, ...rest);
+      }) as typeof nodeFs.openSync);
+      try {
+        writeSkillFile(skillsDir, 'flaky-read', 'changed while it cannot be opened');
+        await waitFor(() => names('unloaded').includes('flaky-read'), "'unloaded' for flaky-read");
+        isBusy = false;
+
+        await waitFor(() => getSkillRegistry().has('flaky-read'), 'flaky-read registered again');
+        expect(names('loaded')).toEqual(['flaky-read', 'flaky-read']);
+      } finally {
+        openSpy.mockRestore();
+      }
     }, 30000);
 
     it('loads a changed file again once it can be checked', async () => {
