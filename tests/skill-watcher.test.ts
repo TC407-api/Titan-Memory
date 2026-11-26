@@ -395,6 +395,39 @@ describe('SkillWatcher file events (end to end)', () => {
     expect(getSkillRegistry().count()).toBe(1);
   }, 30000);
 
+  it('loads a refused file once the name is free, and does not retry while it is taken', async () => {
+    const codePath = path.join(skillsDir, 'digest.js');
+    getSkillRegistry().register(codeSkillFile(codePath, 'digest', ['digest']));
+    startWatcher();
+
+    const markdown = writeSkillFile(skillsDir, 'digest');
+    await waitFor(() => errorsFor(markdown).length > 0, "an 'error' for digest.skill.md");
+    // Longer than the watcher's check of refused files.
+    await sleep(2500);
+    expect(errorsFor(markdown)).toHaveLength(1);
+    expect(getSkillRegistry().getFile('digest')?.path).toBe(codePath);
+
+    // Released by something other than the watcher.
+    getSkillRegistry().unregister('digest');
+
+    await waitFor(() => getSkillRegistry().getFile('digest')?.path === markdown, 'digest loaded from markdown');
+    expect(names('loaded')).toEqual(['digest']);
+  }, 30000);
+
+  it('registers the copy when a skill file is copied and the original deleted', async () => {
+    startWatcher();
+    const original = await addAndWaitForLoad(skillsDir, 'moved-skill');
+    const copy = path.join(skillsDir, 'moved-copy.skill.md');
+
+    fs.copyFileSync(original, copy);
+    await waitFor(() => errorsFor(copy).length > 0, "an 'error' for the copy");
+    fs.rmSync(original);
+
+    await waitFor(() => getSkillRegistry().getFile('moved-skill')?.path === copy, 'moved-skill loaded from the copy');
+    expect(names('unloaded')).toEqual(['moved-skill']);
+    expect(names('loaded')).toEqual(['moved-skill', 'moved-skill']);
+  }, 30000);
+
   it('unloads the skills it loaded when it is stopped, and loads them again on start()', async () => {
     const started = startWatcher();
     await addAndWaitForLoad(skillsDir, 'while-running');
@@ -446,6 +479,19 @@ describe('SkillWatcher file events (end to end)', () => {
     await sleep(SETTLE_MS);
 
     expect(getSkillRegistry().has('became-dir')).toBe(false);
+  }, 30000);
+
+  it('unloads a skill whose file is replaced by a directory while it runs', async () => {
+    // Done at once, chokidar can report nothing for this on some platforms;
+    // the watcher's own check of its files unloads the skill either way.
+    startWatcher();
+    const file = await addAndWaitForLoad(skillsDir, 'dir-while-running');
+
+    fs.rmSync(file);
+    fs.mkdirSync(file);
+
+    await waitFor(() => !getSkillRegistry().has('dir-while-running'), 'dir-while-running unloaded');
+    expect(names('unloaded')).toEqual(['dir-while-running']);
   }, 30000);
 
   it('keeps a disabled skill disabled through stop() and start()', async () => {
@@ -829,6 +875,51 @@ describe('SkillWatcher file events (end to end)', () => {
     await waitFor(() => getSkillRegistry().has('after-name'), 'after-name registered');
 
     expect(getSkillRegistry().isEnabled('after-name')).toBe(false);
+  }, 30000);
+
+  it('carries a disable to the new name when a save renames the skill, and keeps the old name disabled', async () => {
+    startWatcher();
+    const file = writeSkillFile(skillsDir, 'first-title');
+    await waitFor(() => names('loaded').includes('first-title'), "'loaded' for first-title");
+    getSkillRegistry().disable('first-title');
+
+    fs.writeFileSync(file, '---\nname: second-title\ntriggers: [second-title]\n---\nrenamed\n');
+    await waitFor(() => getSkillRegistry().has('second-title'), 'second-title registered');
+
+    expect(getSkillRegistry().isEnabled('second-title')).toBe(false);
+    expect(getSkillRegistry().isNameDisabled('first-title')).toBe(true);
+    // The disable stays with the file through a later save under the new name.
+    fs.writeFileSync(file, '---\nname: second-title\ntriggers: [second-title]\n---\nedited\n');
+    await waitFor(() => names('reloaded').filter((n) => n === 'second-title').length >= 2, "a second 'reloaded'");
+    expect(getSkillRegistry().isEnabled('second-title')).toBe(false);
+  }, 30000);
+
+  it('does not carry a disable that enable() lifted while the file was broken', async () => {
+    startWatcher();
+    const file = writeSkillFile(skillsDir, 'lifted-name');
+    await waitFor(() => names('loaded').includes('lifted-name'), "'loaded' for lifted-name");
+    getSkillRegistry().disable('lifted-name');
+
+    fs.writeFileSync(file, 'saved half way through an edit\n');
+    await waitFor(() => names('unloaded').includes('lifted-name'), "'unloaded' for lifted-name");
+    expect(getSkillRegistry().enable('lifted-name')).toBe(false);
+    fs.writeFileSync(file, '---\nname: other-name\ntriggers: [other-name]\n---\nrepaired\n');
+    await waitFor(() => getSkillRegistry().has('other-name'), 'other-name registered');
+
+    expect(getSkillRegistry().isEnabled('other-name')).toBe(true);
+  }, 30000);
+
+  it('does not carry a disable to a file whose skill was enabled when it was renamed', async () => {
+    startWatcher();
+    const file = writeSkillFile(skillsDir, 'kept-on');
+    await waitFor(() => names('loaded').includes('kept-on'), "'loaded' for kept-on");
+    getSkillRegistry().disable('kept-on');
+    getSkillRegistry().enable('kept-on');
+
+    fs.writeFileSync(file, '---\nname: kept-on-renamed\ntriggers: [kept-on-renamed]\n---\nrenamed\n');
+    await waitFor(() => getSkillRegistry().has('kept-on-renamed'), 'kept-on-renamed registered');
+
+    expect(getSkillRegistry().isEnabled('kept-on-renamed')).toBe(true);
   }, 30000);
 
   it('reports the old name as unloaded when a save gives the skill another name', async () => {

@@ -720,7 +720,9 @@ triggers:
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('should keep a file disabled when the reload gives its skill another name', async () => {
+  // The registry keeps a disable per skill name. reloadSkill() does not carry
+  // one over to a new name (the skill watcher does; see skill-watcher.test.ts).
+  it('should keep the old name disabled when the reload gives the skill another name', async () => {
     const dir = makeTempDir('reload-disabled-renamed');
     const filePath = writeSkillMd(dir, 'renamed.skill.md', skillMd('old-name'));
     const registry = getSkillRegistry();
@@ -731,9 +733,11 @@ triggers:
     await reloadSkill(filePath);
 
     expect(registry.has('old-name')).toBe(false);
-    expect(registry.isEnabled('new-name')).toBe(false);
-    expect(registry.enable('new-name')).toBe(true);
-    expect(registry.isEnabled('new-name')).toBe(true);
+    expect(registry.isNameDisabled('old-name')).toBe(true);
+    expect(registry.isNameDisabled('new-name')).toBe(false);
+    fs.writeFileSync(filePath, skillMd('old-name'));
+    await reloadSkill(filePath);
+    expect(registry.isEnabled('old-name')).toBe(false);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -758,7 +762,7 @@ triggers:
     return { opened, open };
   }
 
-  it('should keep a file disabled through a failed reload and a repair under another name', async () => {
+  it('should keep a name disabled through a failed reload, also for another file under that name', async () => {
     const dir = makeTempDir('reload-disabled-broken-renamed');
     const filePath = writeSkillMd(dir, 'mend.skill.md', skillMd('before-name'));
     const registry = getSkillRegistry();
@@ -768,31 +772,28 @@ triggers:
 
     fs.writeFileSync(filePath, 'no frontmatter, so this version cannot be loaded\n');
     expect(await reloadSkill(filePath)).toBeNull();
-    fs.writeFileSync(filePath, skillMd('after-name'));
-    await reloadSkill(filePath);
+    const otherPath = writeSkillMd(dir, 'other.skill.md', skillMd('before-name'));
+    await reloadSkill(otherPath);
 
-    expect(registry.has('after-name')).toBe(true);
-    expect(registry.isEnabled('after-name')).toBe(false);
+    expect(registry.has('before-name')).toBe(true);
+    expect(registry.isEnabled('before-name')).toBe(false);
     warnSpy.mockRestore();
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('should keep enable() of a renamed file through later reloads, and free the old name', async () => {
-    const dir = makeTempDir('reload-enable-after-rename');
-    const filePath = writeSkillMd(dir, 'renamed.skill.md', skillMd('before-name'));
+  it('should keep enable() of a name through later reloads', async () => {
+    const dir = makeTempDir('reload-enable-after-disable');
+    const filePath = writeSkillMd(dir, 'toggled.skill.md', skillMd('toggled-name'));
     const registry = getSkillRegistry();
     await reloadSkill(filePath);
-    registry.disable('before-name');
-    fs.writeFileSync(filePath, skillMd('after-name'));
+    registry.disable('toggled-name');
+    await reloadSkill(filePath);
+    expect(registry.isEnabled('toggled-name')).toBe(false);
+
+    expect(registry.enable('toggled-name')).toBe(true);
     await reloadSkill(filePath);
 
-    expect(registry.enable('after-name')).toBe(true);
-    await reloadSkill(filePath);
-    const otherPath = writeSkillMd(dir, 'other.skill.md', skillMd('before-name'));
-    await reloadSkill(otherPath);
-
-    expect(registry.isEnabled('after-name')).toBe(true);
-    expect(registry.isEnabled('before-name')).toBe(true);
+    expect(registry.isEnabled('toggled-name')).toBe(true);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 

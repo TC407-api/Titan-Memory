@@ -225,97 +225,125 @@ describe('Skill System', () => {
       path: filePath,
     });
 
-    it('should keep a file disabled when it comes back with another skill name', () => {
+    // The disabled state belongs to the name. These pin that contract down for
+    // each call, for a registered and an unregistered name.
+
+    it('should keep the state of a name, not of a file, when the file comes back under another name', () => {
       registry.register(fileAt('/skills/a.skill.md', 'first-name'));
       registry.disable('first-name');
       registry.unregister('first-name');
 
       registry.register(fileAt('/skills/a.skill.md', 'second-name'));
-
-      expect(registry.isEnabled('second-name')).toBe(false);
-    });
-
-    it('should forget the old name once a disabled file has another skill name', () => {
-      registry.register(fileAt('/skills/a.skill.md', 'first-name'));
-      registry.disable('first-name');
-      registry.unregister('first-name');
-      registry.register(fileAt('/skills/a.skill.md', 'second-name'));
-
-      expect(registry.enable('second-name')).toBe(true);
-      registry.unregister('second-name');
-      registry.register(fileAt('/skills/a.skill.md', 'second-name'));
-      registry.register(fileAt('/skills/other.skill.md', 'first-name'));
+      registry.register(fileAt('/skills/b.skill.md', 'first-name'));
 
       expect(registry.isEnabled('second-name')).toBe(true);
-      expect(registry.isEnabled('first-name')).toBe(true);
+      expect(registry.isNameDisabled('second-name')).toBe(false);
+      expect(registry.isEnabled('first-name')).toBe(false);
     });
 
-    it('should let enable() of an unregistered name lift the disable from its file too', () => {
+    it('should report a disabled name with isNameDisabled() while nothing is registered under it', () => {
       registry.register(fileAt('/skills/a.skill.md', 'first-name'));
+      expect(registry.isNameDisabled('first-name')).toBe(false);
       registry.disable('first-name');
       registry.unregister('first-name');
 
+      expect(registry.isEnabled('first-name')).toBe(false);
+      expect(registry.isNameDisabled('first-name')).toBe(true);
       expect(registry.enable('first-name')).toBe(false);
-      registry.register(fileAt('/skills/a.skill.md', 'second-name'));
-
-      expect(registry.isEnabled('second-name')).toBe(true);
+      expect(registry.isNameDisabled('first-name')).toBe(false);
     });
 
-    it('should not disable another file that takes over a disabled skill name later', () => {
+    it('should disable any file registered under a disabled name, and enable() lifts it for all', () => {
       registry.register(fileAt('/skills/a.skill.md', 'shared-name'));
       registry.disable('shared-name');
-      registry.unregister('shared-name');
-      registry.register(fileAt('/skills/a.skill.md', 'renamed'));
-
       registry.register(fileAt('/skills/b.skill.md', 'shared-name'));
+      expect(registry.isEnabled('shared-name')).toBe(false);
 
-      expect(registry.isEnabled('renamed')).toBe(false);
+      expect(registry.enable('shared-name')).toBe(true);
+      registry.register(fileAt('/skills/a.skill.md', 'shared-name'));
+
       expect(registry.isEnabled('shared-name')).toBe(true);
     });
 
-    it('should keep a disabled file disabled after another file registers its skill name', () => {
-      registry.register(fileAt('/skills/a.skill.md', 'shared-name'));
-      registry.disable('shared-name');
-      registry.register(fileAt('/skills/b.skill.md', 'shared-name'));
+    it('should not change other names when disable() or enable() is called for one', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'report'));
+      registry.register(fileAt('/skills/b.skill.md', 'summary'));
+      registry.disable('summary');
 
-      // File a comes back under another name, without enable() being called.
-      registry.register(fileAt('/skills/a.skill.md', 'renamed'));
+      registry.disable('report');
+      registry.enable('report');
 
-      expect(registry.isEnabled('renamed')).toBe(false);
-      // The disable of shared-name also covers the skill b registered under it,
-      // and enabling that name leaves file a disabled.
-      expect(registry.isEnabled('shared-name')).toBe(false);
-      expect(registry.enable('shared-name')).toBe(true);
-      expect(registry.isEnabled('renamed')).toBe(false);
+      expect(registry.isEnabled('report')).toBe(true);
+      expect(registry.isEnabled('summary')).toBe(false);
+      expect(registry.isNameDisabled('summary')).toBe(true);
     });
 
-    it('should leave a disabled file disabled when enable() is called for another file under its name', () => {
+    it('should let enable() of a name lift the disable for every file under that name', () => {
       registry.register(fileAt('/skills/a.skill.md', 'report'));
       registry.disable('report');
       registry.unregister('report');
       registry.register(fileAt('/skills/b.skill.md', 'report'));
       expect(registry.isEnabled('report')).toBe(false);
 
-      // Enabled before file a comes back under another name.
       expect(registry.enable('report')).toBe(true);
       registry.register(fileAt('/skills/b.skill.md', 'report'));
       expect(registry.isEnabled('report')).toBe(true);
-      registry.register(fileAt('/skills/a.skill.md', 'summary'));
+      registry.register(fileAt('/skills/a.skill.md', 'report'));
 
-      expect(registry.isEnabled('summary')).toBe(false);
       expect(registry.isEnabled('report')).toBe(true);
     });
 
-    it('should keep a name disabled when its file registers a second name', () => {
+    it('should not disable a second name that a file registers while its first name is disabled', () => {
       registry.register(fileAt('/skills/a.skill.md', 'daily'));
       registry.disable('daily');
-      // File a is still registered as daily when it registers alias too.
       registry.register(fileAt('/skills/a.skill.md', 'alias'));
-      expect(registry.isEnabled('alias')).toBe(false);
+      expect(registry.isEnabled('alias')).toBe(true);
+      expect(registry.isEnabled('daily')).toBe(false);
 
       registry.register(fileAt('/skills/b.skill.md', 'daily'));
 
       expect(registry.isEnabled('daily')).toBe(false);
+    });
+
+    it('should keep a name disabled when enable() is called for another name of the same file', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'daily'));
+      registry.disable('daily');
+      registry.register(fileAt('/skills/a.skill.md', 'alias'));
+
+      expect(registry.enable('alias')).toBe(true);
+      registry.register(fileAt('/skills/a.skill.md', 'daily'));
+
+      expect(registry.isEnabled('daily')).toBe(false);
+      expect(registry.isEnabled('alias')).toBe(true);
+      registry.unregister('daily');
+      registry.register(fileAt('/skills/a.skill.md', 'daily'));
+      expect(registry.isEnabled('daily')).toBe(false);
+    });
+
+    it('should keep an alias enabled after enable() when the file registers it again', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'daily'));
+      registry.disable('daily');
+      registry.register(fileAt('/skills/a.skill.md', 'alias'));
+      registry.disable('alias');
+      expect(registry.enable('alias')).toBe(true);
+      registry.unregister('alias');
+      registry.unregister('daily');
+
+      registry.register(fileAt('/skills/a.skill.md', 'alias'));
+
+      expect(registry.isEnabled('alias')).toBe(true);
+    });
+
+    it('should keep a disable that only disable() made when register() is given an enabled file', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'kept-off'));
+      registry.disable('kept-off');
+
+      const fresh = fileAt('/skills/a.skill.md', 'kept-off');
+      expect(fresh.enabled).toBe(true);
+      registry.register(fresh);
+
+      expect(fresh.enabled).toBe(false);
+      expect(registry.listDisabled().map((m) => m.name)).toEqual(['kept-off']);
     });
 
     it('should keep an enable() that a listener calls while register() replaces a disabled skill', () => {
