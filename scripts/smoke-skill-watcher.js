@@ -17,6 +17,8 @@
  *      edited and deleted in the watched directory, with `patterns` that
  *      name them, leave no marker and no event, and a code skill that was
  *      registered from one of them stays registered.
+ *   3. A .skill.md file that declares the name of that code skill does not
+ *      replace it, and deleting the file leaves the code skill registered.
  *
  * Exit code 1 means one of these failed.
  */
@@ -120,6 +122,27 @@ async function checkCodeFilesAreLeftAlone(dir, markerDir, seen, registry) {
   }
 }
 
+/**
+ * A .skill.md file that declares the name of the registered code skill is
+ * refused, and deleting it leaves the code skill registered. The load of a
+ * later .skill.md file shows that the watcher has handled the delete.
+ */
+async function checkMarkdownCannotTakeACodeSkillName(dir, seen, registry) {
+  const codePath = registry.getFile('code-skill').path;
+  const file = path.join(dir, 'collide.skill.md');
+  fs.writeFileSync(file, '---\nname: code-skill\ntriggers: [code]\n---\nmarkdown\n');
+  const refused = () => seen.errors.some((e) => e.error.message.includes('"code-skill"'));
+  await waitFor(refused, "an 'error' for collide.skill.md");
+  fs.rmSync(file);
+  writeMarkdownSkill(dir, 'after-collide');
+  await waitFor(() => seen.loaded.includes('after-collide'), "'loaded' for after-collide");
+
+  const owner = registry.getFile('code-skill');
+  if (owner?.path !== codePath || seen.unloaded.includes('code-skill')) {
+    throw new Error(`code-skill was replaced or unloaded by collide.skill.md: now ${owner?.path}`);
+  }
+}
+
 async function main() {
   const { SkillWatcher } = require('../dist/skills/watcher.js');
   const { getSkillRegistry } = require('../dist/skills/registry.js');
@@ -149,11 +172,13 @@ async function main() {
     if (seen.errors.length > 0) {
       throw new Error(`unexpected watcher errors: ${seen.errors.map((e) => e.error.message)}`);
     }
+    await checkMarkdownCannotTakeACodeSkillName(dir, seen, registry);
     console.log(
       `skill watcher smoke ok: node ${process.version}, ` +
         'a .skill.md file present before start() was loaded, ' +
         'a .skill.md file was loaded, reloaded and unloaded, ' +
-        'no .js or .ts file was evaluated or acted on by the watcher'
+        'no .js or .ts file was evaluated or acted on by the watcher, ' +
+        'a .skill.md file could not take the name of a code skill'
     );
   } finally {
     await watcher.stop();

@@ -2,7 +2,7 @@
  * Tests for which file events reach the loader: none after the watcher has
  * stopped, and only those for .skill.md files.
  *
- * reloadSkill and unloadSkill are wrapped in mocks that call the real
+ * loadSkillFromFile and unloadSkill are wrapped in mocks that call the real
  * functions, so the tests can see what the watcher hands them. Files,
  * chokidar events and the registry are real.
  */
@@ -18,13 +18,13 @@ jest.mock('../src/skills/loader', () => {
   const actual = jest.requireActual('../src/skills/loader');
   return {
     ...actual,
-    reloadSkill: jest.fn(actual.reloadSkill),
+    loadSkillFromFile: jest.fn(actual.loadSkillFromFile),
     unloadSkill: jest.fn(actual.unloadSkill),
   };
 });
 
 const actualLoader = jest.requireActual<typeof loader>('../src/skills/loader');
-const reloadSkillMock = loader.reloadSkill as jest.MockedFunction<typeof loader.reloadSkill>;
+const loadSkillMock = loader.loadSkillFromFile as jest.MockedFunction<typeof loader.loadSkillFromFile>;
 const unloadSkillMock = loader.unloadSkill as jest.MockedFunction<typeof loader.unloadSkill>;
 
 const EVENT_TIMEOUT_MS = 10000;
@@ -61,7 +61,7 @@ describe('SkillWatcher: which file events reach the loader', () => {
   beforeEach(() => {
     resetSkillRegistry();
     seen = [];
-    reloadSkillMock.mockClear();
+    loadSkillMock.mockClear();
     unloadSkillMock.mockClear();
     skillsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'titan-skill-order-'));
     warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -81,14 +81,14 @@ describe('SkillWatcher: which file events reach the loader', () => {
   it('ignores file events that arrive after the watcher is stopped', async () => {
     writeSkillFile(skillsDir, 'early-skill');
     await waitFor(() => names('loaded').includes('early-skill'), "'loaded' for early-skill");
-    const callsBefore = reloadSkillMock.mock.calls.length;
+    const callsBefore = loadSkillMock.mock.calls.length;
 
     // Written inside the debounce and write-finish window, then stopped.
     writeSkillFile(skillsDir, 'late-skill');
     await watcher.stop();
     await sleep(SETTLE_MS);
 
-    expect(reloadSkillMock.mock.calls.length).toBe(callsBefore);
+    expect(loadSkillMock.mock.calls.length).toBe(callsBefore);
     expect(getSkillRegistry().has('late-skill')).toBe(false);
   }, 30000);
 
@@ -106,7 +106,7 @@ describe('SkillWatcher: which file events reach the loader', () => {
     codeSkill.path = inDir('plain.js');
     codeSkill.metadata = { ...codeSkill.metadata, name: 'code-skill' };
     getSkillRegistry().register(codeSkill);
-    const loadedPaths = (): string[] => reloadSkillMock.mock.calls.map(([skillPath]) => skillPath);
+    const loadedPaths = (): string[] => loadSkillMock.mock.calls.map(([skillPath]) => skillPath);
 
     // The timers of the earlier calls run before the timer of the last one.
     for (const file of others) {
