@@ -6,7 +6,7 @@
 
 jest.mock('path', () => jest.requireActual('path').posix);
 
-import { createWatchFilter, PathKind } from '../src/skills/watch-filter';
+import { createWatchFilter, hasBackslashInName, PathKind } from '../src/skills/watch-filter';
 
 const FILE: PathKind = { isFile: () => true };
 const DIRECTORY: PathKind = { isFile: () => false };
@@ -39,6 +39,12 @@ describe('createWatchFilter with POSIX paths', () => {
     expect(skip('/skills/a\\b', DIRECTORY)).toBe(true);
     expect(skip('/skills/custom/a.skill.md', FILE)).toBe(false);
     expect(skip('/skills', DIRECTORY)).toBe(false);
+  });
+
+  it('finds a backslash anywhere in a path, so start() can refuse such a skills directory', () => {
+    expect(hasBackslashInName('/tmp/team\\one')).toBe(true);
+    expect(hasBackslashInName('/tmp\\x/skills')).toBe(true);
+    expect(hasBackslashInName('/tmp/team/one')).toBe(false);
   });
 
   it('still accepts a glob written with backslashes', () => {

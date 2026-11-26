@@ -112,10 +112,10 @@ export function createWatchFilter(options: WatchFilterOptions): WatchFilter {
     if (nativeRelativePath === '') {
       return false;
     }
-    // Where "/" is the only separator, a backslash is part of a name. chokidar
-    // turns it into "/" before it asks this filter, and the globs here read it
-    // as a separator too, so such a name is skipped whichever way it arrives.
-    if (path.sep === '/' && nativeRelativePath.includes('\\')) {
+    // chokidar turns a backslash into "/" before it asks this filter, and the
+    // globs here read it as a separator too, so such a name is skipped
+    // whichever way it arrives.
+    if (hasBackslashInName(nativeRelativePath)) {
       return true;
     }
     const relativePath = toPosixPath(nativeRelativePath);
@@ -128,6 +128,16 @@ export function createWatchFilter(options: WatchFilterOptions): WatchFilter {
 
     return isFileOrLink(stats) && !matchesAny(wanted, relativePath);
   };
+}
+
+/**
+ * True where "/" is the only separator (POSIX) and `candidatePath` has a
+ * backslash in it, which is then part of a file or directory name. chokidar
+ * reads every backslash as a separator, so the skill watcher neither loads
+ * such a name nor watches a skills directory whose path has one.
+ */
+export function hasBackslashInName(candidatePath: string): boolean {
+  return path.sep === '/' && candidatePath.includes('\\');
 }
 
 /** True when `stats` describes a file or a symbolic link (not a directory). */

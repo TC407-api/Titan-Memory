@@ -646,6 +646,18 @@ describe('SkillWatcher file events (end to end)', () => {
     30000
   );
 
+  (process.platform === 'win32' ? it.skip : it)(
+    'refuses a skills directory with a backslash in its path, before creating it',
+    () => {
+      skillsDir = path.join(tempRoot, 'team\\one');
+      const created = new SkillWatcher({ skillsDir, debounceMs: 20 });
+
+      expect(() => created.start()).toThrow('backslash');
+      expect(created.isWatching()).toBe(false);
+      expect(fs.existsSync(skillsDir)).toBe(false);
+    }
+  );
+
   it('does not report or own a load that a registry listener replaces during the register', async () => {
     const started = startWatcher();
     const registry = getSkillRegistry();

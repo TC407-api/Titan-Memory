@@ -204,11 +204,19 @@ export class SkillRegistry {
   /**
    * Remember this file as disabled under this name, in place of an older
    * record of the same file: a file whose skill was renamed frees its old
-   * name. Records of other files stay, also those under the same name, so
-   * each file keeps its own disabled state when the names part again.
+   * name. A record of the same file under a name that is still registered
+   * from it stays: that is a second skill of the file, not a rename. Records
+   * of other files stay, also those under the same name, so each file keeps
+   * its own disabled state when the names part again.
    */
   private rememberDisabledSkill(name: string, filePath: string): void {
-    this.disabledSkills = this.disabledSkills.filter((skill) => skill.path !== filePath);
+    this.disabledSkills = this.disabledSkills.filter(
+      (skill) =>
+        skill.path !== filePath ||
+        (skill.name !== undefined &&
+          skill.name !== name &&
+          this.skills.get(skill.name)?.file.path === filePath)
+    );
     this.disabledSkills.push({ name, path: filePath });
   }
 

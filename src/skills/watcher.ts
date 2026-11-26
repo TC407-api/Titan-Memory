@@ -12,6 +12,7 @@ import type { SkillFile } from './types.js';
 import {
   createWatchFilter,
   crossesSymlink,
+  hasBackslashInName,
   isFileOrLink,
   isMarkdownSkillFile,
   PathKind,
@@ -106,7 +107,12 @@ function pathExists(filePath: string): boolean {
  * that is still running when stop() is called registers nothing.
  *
  * On POSIX a name below skillsDir that contains a backslash is never
- * loaded: chokidar reads the backslash as a separator (see createWatchFilter).
+ * loaded, and start() throws for a skillsDir whose path contains one:
+ * chokidar reads the backslash as a separator (see hasBackslashInName).
+ *
+ * A file that is replaced by a directory faster than chokidar looks again
+ * produces no event (chokidar 6 keeps the name as a known entry), so its
+ * skill stays registered until the next stop().
  *
  * File paths are compared as strings, spelled as the watcher reports them
  * (below skillsDir as given), as the loader and the registry do. A skill
@@ -203,6 +209,12 @@ export class SkillWatcher {
       return;
     }
 
+    // Before anything is created: chokidar would watch another path.
+    if (hasBackslashInName(this.root)) {
+      throw new Error(
+        `Skills directory ${this.root} has a backslash in its path, which chokidar reads as a separator`
+      );
+    }
     // chokidar 4 and later take paths, not globs. Watch the directory and
     // let the filter pick the files (see watch-filter.ts).
     fs.mkdirSync(this.root, { recursive: true });

@@ -306,6 +306,18 @@ describe('Skill System', () => {
       expect(registry.isEnabled('report')).toBe(true);
     });
 
+    it('should keep a name disabled when its file registers a second name', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'daily'));
+      registry.disable('daily');
+      // File a is still registered as daily when it registers alias too.
+      registry.register(fileAt('/skills/a.skill.md', 'alias'));
+      expect(registry.isEnabled('alias')).toBe(false);
+
+      registry.register(fileAt('/skills/b.skill.md', 'daily'));
+
+      expect(registry.isEnabled('daily')).toBe(false);
+    });
+
     it('should keep an enable() that a listener calls while register() replaces a disabled skill', () => {
       registry.register(fileAt('/skills/a.skill.md', 'report'));
       registry.disable('report');
