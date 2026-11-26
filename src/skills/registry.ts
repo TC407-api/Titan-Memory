@@ -52,8 +52,12 @@ export class SkillRegistry {
    * has another name registers a skill under that name, in that name's state.
    * (The skill watcher carries a disable over to the new name of a file it
    * loaded; see SkillWatcher.)
+   *
+   * Returns the disable this call made: when `file.enabled` was false and
+   * the name was not disabled yet. Read before any listener runs, so a
+   * caller can tell it from a disable a listener makes during the call.
    */
-  register(file: SkillFile): void {
+  register(file: SkillFile): SkillDisable | undefined {
     const { metadata } = file;
     const name = metadata.name;
 
@@ -63,9 +67,7 @@ export class SkillRegistry {
     }
 
     // Decided after that unregister, whose listeners can call enable().
-    if (!file.enabled) {
-      this.markDisabled(name, file.path);
-    }
+    const madeDisable = file.enabled ? undefined : this.markDisabled(name, file.path);
     file.enabled = !this.disabledNames.has(name);
 
     // Create registry entry
@@ -94,6 +96,7 @@ export class SkillRegistry {
     }
 
     this.emit({ type: 'skill:loaded', name, path: file.path });
+    return madeDisable;
   }
 
   /**
@@ -204,13 +207,17 @@ export class SkillRegistry {
 
   /**
    * Disable a name that is not disabled yet, under a new disable id, for
-   * the skill from `filePath`. A name that is disabled already keeps its
-   * disable, and the file that disable was made for.
+   * the skill from `filePath`, and return that disable. A name that is
+   * disabled already keeps its disable, and the file that disable was made
+   * for; then this returns undefined.
    */
-  private markDisabled(name: string, filePath: string): void {
-    if (!this.disabledNames.has(name)) {
-      this.disabledNames.set(name, { id: nextDisableId++, path: filePath });
+  private markDisabled(name: string, filePath: string): SkillDisable | undefined {
+    if (this.disabledNames.has(name)) {
+      return undefined;
     }
+    const disable: SkillDisable = { id: nextDisableId++, path: filePath };
+    this.disabledNames.set(name, disable);
+    return disable;
   }
 
   /**

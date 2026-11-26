@@ -172,6 +172,26 @@ export function isMarkdownSkillFile(filePath: string): boolean {
  * a process that swaps a link in between the two.
  */
 export function crossesSymlink(root: string, candidatePath: string): boolean {
+  const state = inspectPath(root, candidatePath);
+  return state !== 'file' && state !== 'other';
+}
+
+/**
+ * What `candidatePath` is, for the checks of crossesSymlink:
+ * - 'file': a regular file below `root`, reached without a link;
+ * - 'other': below `root` and reached without a link, but not a regular
+ *   file (a directory, a FIFO, a device);
+ * - 'link': the path is not below `root`, or `root`, the path or a
+ *   directory between them is a link;
+ * - 'missing': the path or a directory on it does not exist;
+ * - 'unknown': it could not be checked (an error other than a missing
+ *   entry), so it may be fine a moment later.
+ */
+export type PathState = 'file' | 'other' | 'link' | 'missing' | 'unknown';
+
+const MISSING_CODES = new Set(['ENOENT', 'ENOTDIR']);
+
+export function inspectPath(root: string, candidatePath: string): PathState {
   const rootPath = path.resolve(root);
   const relativePath = path.relative(rootPath, path.resolve(candidatePath));
   const isOutsideRoot =
@@ -179,23 +199,24 @@ export function crossesSymlink(root: string, candidatePath: string): boolean {
     relativePath.startsWith(`..${path.sep}`) ||
     path.isAbsolute(relativePath);
   if (relativePath === '' || isOutsideRoot) {
-    return true;
+    return 'link';
   }
 
   let currentPath = rootPath;
   try {
-    if (fs.lstatSync(rootPath).isSymbolicLink()) {
-      return true;
+    let stats = fs.lstatSync(rootPath);
+    if (stats.isSymbolicLink()) {
+      return 'link';
     }
     for (const segment of relativePath.split(path.sep)) {
       currentPath = path.join(currentPath, segment);
-      if (fs.lstatSync(currentPath).isSymbolicLink()) {
-        return true;
+      stats = fs.lstatSync(currentPath);
+      if (stats.isSymbolicLink()) {
+        return 'link';
       }
     }
-  } catch {
-    // Gone or unreadable: it cannot be shown to be link-free.
-    return true;
+    return stats.isFile() ? 'file' : 'other';
+  } catch (error) {
+    return MISSING_CODES.has((error as NodeJS.ErrnoException).code ?? '') ? 'missing' : 'unknown';
   }
-  return false;
 }

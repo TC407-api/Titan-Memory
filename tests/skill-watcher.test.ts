@@ -1016,6 +1016,103 @@ describe('SkillWatcher file events (end to end)', () => {
     }
   }, 30000);
 
+  it('keeps a disable that a listener makes again while a rename that carries one does not stand', async () => {
+    startWatcher();
+    const registry = getSkillRegistry();
+    const file = writeSkillFile(skillsDir, 'daily');
+    await waitFor(() => names('loaded').includes('daily'), "'loaded' for daily");
+    registry.disable('daily');
+    const redisable: Parameters<typeof registry.addEventListener>[0] = (event) => {
+      if (event.type === 'skill:loaded' && event.name === 'weekly') {
+        registry.enable('weekly');
+        registry.disable('weekly');
+        registry.unregister('weekly');
+      }
+    };
+    registry.addEventListener(redisable);
+    try {
+      fs.writeFileSync(file, skillText('weekly'));
+      await waitFor(() => names('unloaded').includes('daily'), "'unloaded' for daily");
+      await sleep(SETTLE_MS);
+    } finally {
+      registry.removeEventListener(redisable);
+    }
+
+    expect(registry.isNameDisabled('weekly')).toBe(true);
+    registry.register(codeSkillFile(path.join(skillsDir, 'w.js'), 'weekly', ['weekly']));
+    expect(registry.isEnabled('weekly')).toBe(false);
+  }, 30000);
+
+  it('does not report or own a reload when a listener replaces the registry during it', async () => {
+    startWatcher();
+    const file = writeSkillFile(skillsDir, 'swapped-registry');
+    await waitFor(() => names('loaded').includes('swapped-registry'), "'loaded' for swapped-registry");
+    const original = getSkillRegistry();
+    const resetOnUnload: Parameters<typeof original.addEventListener>[0] = (event) => {
+      if (event.type === 'skill:unloaded' && event.name === 'swapped-registry') resetSkillRegistry();
+    };
+    original.addEventListener(resetOnUnload);
+    try {
+      fs.writeFileSync(file, skillText('swapped-registry', 'edited'));
+      await waitFor(() => getSkillRegistry() !== original, 'the registry to be replaced');
+      await sleep(SETTLE_MS);
+    } finally {
+      original.removeEventListener(resetOnUnload);
+    }
+
+    expect(names('reloaded')).toEqual([]);
+    expect(original.has('swapped-registry')).toBe(false);
+  }, 30000);
+
+  describe('when the file system cannot answer for a while', () => {
+    // The real fs module object, which the watcher and the filter call into.
+    const nodeFs = jest.requireActual<typeof fs>('fs');
+    let failing: string | null = null;
+    let lstatSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      const realLstat = nodeFs.lstatSync.bind(nodeFs);
+      lstatSpy = jest.spyOn(nodeFs, 'lstatSync').mockImplementation(((target: fs.PathLike, ...rest: unknown[]) => {
+        if (failing !== null && path.resolve(String(target)) === failing) {
+          throw Object.assign(new Error(`EIO: i/o error, lstat '${String(target)}'`), { code: 'EIO' });
+        }
+        return (realLstat as (...args: unknown[]) => unknown)(target, ...rest);
+      }) as typeof nodeFs.lstatSync);
+    });
+
+    afterEach(() => {
+      failing = null;
+      lstatSpy.mockRestore();
+    });
+
+    it('does not lose a skill when its file cannot be checked for a moment', async () => {
+      startWatcher();
+      const file = await addAndWaitForLoad(skillsDir, 'flaky-check');
+
+      failing = file;
+      await sleep(2500); // Longer than two checks of the watcher's files.
+      failing = null;
+
+      await waitFor(() => getSkillRegistry().has('flaky-check'), 'flaky-check registered');
+      await sleep(1500);
+      expect(getSkillRegistry().has('flaky-check')).toBe(true);
+    }, 30000);
+
+    it('loads a changed file again once it can be checked', async () => {
+      startWatcher();
+      const file = await addAndWaitForLoad(skillsDir, 'flaky-event');
+
+      failing = file;
+      writeSkillFile(skillsDir, 'flaky-event', 'changed while it cannot be checked');
+      await sleep(SETTLE_MS);
+      failing = null;
+
+      await waitFor(() => getSkillRegistry().has('flaky-event'), 'flaky-event registered again');
+      await sleep(1500);
+      expect(getSkillRegistry().has('flaky-event')).toBe(true);
+    }, 30000);
+  });
+
   it('does not carry a disable that enable() lifted, after another file disables the name again', async () => {
     startWatcher();
     const fileA = writeSkillFile(skillsDir, 'daily');

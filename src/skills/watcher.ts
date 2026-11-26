@@ -7,15 +7,16 @@ import { watch, FSWatcher } from 'chokidar';
 import fs from 'fs';
 import path from 'path';
 import { loadSkillFromFile, getDefaultSkillsDir } from './loader.js';
-import { getSkillRegistry } from './registry.js';
+import { getSkillRegistry, SkillDisable, SkillRegistry } from './registry.js';
 import type { SkillFile } from './types.js';
 import {
   createWatchFilter,
-  crossesSymlink,
   hasBackslashInName,
+  inspectPath,
   isFileOrLink,
   isMarkdownSkillFile,
   PathKind,
+  PathState,
   WatchFilter,
 } from './watch-filter.js';
 // SkillEvent and SkillEventListener imported for type reference only
@@ -81,14 +82,6 @@ function pathExists(filePath: string): boolean {
   }
 }
 
-/** True when `filePath` is a regular file itself (not a link, directory, FIFO or device). */
-function isRegularFile(filePath: string): boolean {
-  try {
-    return fs.lstatSync(filePath).isFile();
-  } catch {
-    return false;
-  }
-}
 
 /**
  * Skill Watcher
@@ -156,7 +149,12 @@ function isRegularFile(filePath: string): boolean {
  * replaced by a directory faster than it looks again, as it keeps the name
  * as a known entry. So while it runs the watcher also checks, every second,
  * that each skill it loaded still comes from a regular file reached
- * without a link (see reconcile()), and unloads one that does not.
+ * without a link (see reconcile()), and unloads one that does not. A path
+ * that cannot be checked (an error other than a missing entry) is not
+ * taken for gone: that check leaves the skill and looks again on its next
+ * pass. A file event for such a path unloads the skill, as its new content
+ * cannot be read safely, and the watcher loads the file again once the
+ * path can be checked.
  *
  * File paths are compared as strings, spelled as the watcher reports them
  * (below skillsDir as given), as the loader and the registry do. A skill
@@ -197,6 +195,10 @@ export class SkillWatcher {
   // Files not loaded because their skill name is registered from another
   // file, with that name. reconcile() loads them again once it is free.
   private refusedFiles: Map<string, string> = new Map();
+  // Files whose path could not be checked when an event for them was
+  // handled (an error other than a missing entry). Their skill was unloaded;
+  // reconcile() loads them again once the path can be checked.
+  private uncertainFiles: Set<string> = new Set();
   private reconcileTimer: NodeJS.Timeout | null = null;
   private isRunning = false;
   // Changes with every start() and stop(), so a load can tell that the run
@@ -331,6 +333,7 @@ export class SkillWatcher {
     }
     this.debounceTimers.clear();
     this.refusedFiles.clear();
+    this.uncertainFiles.clear();
     this.unloadOwnedSkills();
 
     await closing.close();
@@ -428,6 +431,7 @@ export class SkillWatcher {
     }
 
     this.refusedFiles.delete(filePath);
+    this.uncertainFiles.delete(filePath);
     this.runReportingErrors(filePath, async () => this.unloadFile(filePath));
   }
 
@@ -436,8 +440,10 @@ export class SkillWatcher {
    * events miss. A skill this watcher loaded whose file is no longer a
    * regular file reached without a link (deleted, or replaced by a
    * directory, a FIFO or a link) is unloaded, as loadFile() would on an
-   * event. A refused file whose skill name is free now is loaded again.
-   * A file with a load pending is left to that load.
+   * event. A path that cannot be checked right now is left as it is and
+   * checked again on the next pass. A refused file whose skill name is free
+   * now, and a file that could not be checked when its event came, are
+   * loaded again. A file with a load pending is left to that load.
    */
   private reconcile(): void {
     const generation = this.generation;
@@ -445,11 +451,8 @@ export class SkillWatcher {
       for (const filePath of [...this.ownedFiles.keys()]) {
         if (generation !== this.generation) return;
         if (this.debounceTimers.has(filePath)) continue;
-        if (crossesSymlink(this.root, filePath)) {
-          this.dropUnreachableFile(filePath);
-        } else if (!isRegularFile(filePath)) {
-          this.unloadFile(filePath);
-        }
+        const state = inspectPath(this.root, filePath);
+        if (state !== 'file' && state !== 'unknown') this.dropUnreachableFile(filePath, state);
       }
       const registry = getSkillRegistry();
       for (const [filePath, name] of [...this.refusedFiles]) {
@@ -458,20 +461,27 @@ export class SkillWatcher {
         this.refusedFiles.delete(filePath);
         this.runReportingErrors(filePath, () => this.loadFile('add', filePath));
       }
+      for (const filePath of [...this.uncertainFiles]) {
+        if (generation !== this.generation) return;
+        if (this.debounceTimers.has(filePath)) continue;
+        this.runReportingErrors(filePath, () => this.loadFile('add', filePath));
+      }
     } catch (error) {
       this.emit('error', 'watcher', undefined, error as Error);
     }
   }
 
   /**
-   * Unload the skill of `filePath`, which is a link now, or below one, or
-   * gone. One that is still there is reported with an 'error' event, after
-   * the unload, so nothing a listener does then is undone.
+   * Unload the skill of `filePath`, whose path is not a regular file below
+   * the skills directory reached without a link: `state` says what it is
+   * (see inspectPath). A link, or a path outside the skills directory, that
+   * is still there is reported with an 'error' event, after the unload, so
+   * nothing a listener does then is undone.
    */
-  private dropUnreachableFile(filePath: string): void {
-    const isPresent = pathExists(filePath);
+  private dropUnreachableFile(filePath: string, state: PathState): void {
+    const isPresentLink = state === 'link' && pathExists(filePath);
     this.unloadFile(filePath);
-    if (isPresent) {
+    if (isPresentLink) {
       const reason = `${filePath} is outside the skills directory or behind a symbolic link`;
       this.emit('error', filePath, filePath, new Error(`Skill not loaded: ${reason}`));
     }
@@ -488,9 +498,21 @@ export class SkillWatcher {
   private async loadFile(eventType: 'add' | 'change', filePath: string): Promise<void> {
     // Refused again below if its name is still taken.
     this.refusedFiles.delete(filePath);
-    if (crossesSymlink(this.root, filePath)) {
+    const wasUncertain = this.uncertainFiles.delete(filePath);
+    const state = inspectPath(this.root, filePath);
+    if (state === 'unknown') {
+      // Not known to be safe to read: unloaded until reconcile() can check it.
+      this.unloadFile(filePath);
+      this.uncertainFiles.add(filePath);
+      if (!wasUncertain) {
+        const reason = `${filePath} could not be checked; it is tried again every second`;
+        this.emit('error', filePath, filePath, new Error(`Skill not loaded: ${reason}`));
+      }
+      return;
+    }
+    if (state === 'link' || state === 'missing') {
       // A link now, or below one, or deleted since the event.
-      this.dropUnreachableFile(filePath);
+      this.dropUnreachableFile(filePath, state);
       return;
     }
 
@@ -520,14 +542,17 @@ export class SkillWatcher {
    * listener ran) is unregistered first, here, so that register() replaces
    * nothing: when it replaces a skill, register() runs registry listeners
    * between its own check and its update. Each registry call can run
-   * listeners, which can stop the watcher or register the name, from any
-   * file. So both are checked again after each call, and what a listener
-   * registered is left alone.
+   * listeners, which can stop the watcher, register the name, from any
+   * file, or replace the registry (resetSkillRegistry()). So the run, the
+   * registry in use and the name are checked again after each call, and
+   * what a listener registered is left alone.
    */
   private registerUnlessTaken(skillFile: SkillFile, load: FileLoad): void {
     const { eventType, filePath, generation } = load;
     const registry = getSkillRegistry();
     const name = skillFile.metadata.name;
+    const isCurrent = (): boolean =>
+      generation === this.generation && getSkillRegistry() === registry;
     // Only the watcher's own earlier version leaves a record; a skill that
     // something else registered from the file says nothing about the file's
     // disable.
@@ -536,27 +561,28 @@ export class SkillWatcher {
     }
     const hasDroppedPrevious = this.dropRegistered(load.replaced);
     const owner = registry.getFile(name);
-    if (owner || generation !== this.generation) {
+    if (owner || !isCurrent()) {
       if (hasDroppedPrevious) this.emit('unloaded', name, filePath);
       if (owner) {
         // Kept for reconcile() only while this run goes on (stop() clears it).
-        if (generation === this.generation) this.refusedFiles.set(filePath, name);
+        if (isCurrent()) this.refusedFiles.set(filePath, name);
         const reason = `the name "${name}" is registered from ${owner.path}`;
         this.emit('error', filePath, filePath, new Error(`Skill not loaded: ${reason}`));
       }
       return;
     }
-    const hadDisable = registry.isNameDisabled(name);
     const carried = this.carryDisable(skillFile);
-    registry.register(skillFile);
+    // Defined only when this register made the disable (the carry did, to a
+    // name that had none): the one disable undoCarriedDisable() may lift.
+    const madeDisable = registry.register(skillFile);
     if (registry.getFile(name) !== skillFile) {
       // A registry listener replaced or removed it during the register.
-      if (carried && !hadDisable) this.undoCarriedDisable(name, filePath);
+      if (carried && madeDisable) this.undoCarriedDisable(registry, name, madeDisable);
       return;
     }
-    if (generation !== this.generation) {
+    if (!isCurrent()) {
       registry.unregister(name);
-      if (carried && !hadDisable) this.undoCarriedDisable(name, filePath);
+      if (carried && madeDisable) this.undoCarriedDisable(registry, name, madeDisable);
       return;
     }
     this.ownedFiles.set(filePath, skillFile);
@@ -650,13 +676,13 @@ export class SkillWatcher {
 
   /**
    * A registration that carried a disable to a name that had none did not
-   * stand (the watcher was stopped, or a listener removed it): lift the
-   * disable it made, unless a skill is registered under the name now or the
-   * disable in force was made for another file.
+   * stand (the watcher was stopped, the registry replaced, or a listener
+   * removed it): lift the disable it made, `made`, from `registry`, the one
+   * it was registered in. Only that exact disable, and only while nothing is
+   * registered under the name: one a listener made since stays.
    */
-  private undoCarriedDisable(name: string, filePath: string): void {
-    const registry = getSkillRegistry();
-    if (!registry.has(name) && registry.getDisable(name)?.path === filePath) {
+  private undoCarriedDisable(registry: SkillRegistry, name: string, made: SkillDisable): void {
+    if (!registry.has(name) && registry.getDisable(name)?.id === made.id) {
       registry.enable(name);
     }
   }

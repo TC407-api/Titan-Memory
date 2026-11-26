@@ -9,6 +9,7 @@ import {
   createWatchFilter,
   crossesSymlink,
   globToRegExp,
+  inspectPath,
   isMarkdownSkillFile,
   PathKind,
 } from '../src/skills/watch-filter';
@@ -296,5 +297,31 @@ describe('crossesSymlink', () => {
     fs.writeFileSync(path.join(root, '..hidden.skill.md'), 'x');
 
     expect(crossesSymlink(root, path.join(root, '..hidden.skill.md'))).toBe(false);
+  });
+
+  it('tells, through inspectPath, a file, a directory, a link, a missing path and an unchecked one apart', () => {
+    const file = path.join(root, 'custom', 'real.skill.md');
+    expect(inspectPath(root, file)).toBe('file');
+    expect(inspectPath(root, path.join(root, 'custom'))).toBe('other');
+    expect(inspectPath(root, path.join(root, 'custom', 'gone.skill.md'))).toBe('missing');
+    expect(inspectPath(root, path.join(root, 'gone-dir', 'gone.skill.md'))).toBe('missing');
+    expect(inspectPath(root, path.join(outside, 'external.js'))).toBe('link');
+    expect(tryLink(outside, path.join(root, 'linked'), 'dir')).toBe(true);
+    expect(inspectPath(root, path.join(root, 'linked', 'external.js'))).toBe('link');
+
+    const nodeFs = jest.requireActual<typeof fs>('fs');
+    const realLstat = nodeFs.lstatSync.bind(nodeFs);
+    const spy = jest.spyOn(nodeFs, 'lstatSync').mockImplementation(((target: fs.PathLike, ...rest: unknown[]) => {
+      if (path.resolve(String(target)) === file) {
+        throw Object.assign(new Error('EIO: i/o error'), { code: 'EIO' });
+      }
+      return (realLstat as (...args: unknown[]) => unknown)(target, ...rest);
+    }) as typeof nodeFs.lstatSync);
+    try {
+      expect(inspectPath(root, file)).toBe('unknown');
+      expect(crossesSymlink(root, file)).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
