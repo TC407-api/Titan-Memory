@@ -839,7 +839,7 @@ For organizations with ESG commitments, carbon reporting requirements, or sustai
 | Benchmark score (zero-LLM) | 84.2 / 100 |
 | Benchmark score (LLM mode) | **90.7 / 100** |
 | Dependencies | 9 production, 8 dev |
-| Node.js | >= 22.22 |
+| Node.js | >= 22.22 (on 23.x: >= 23.6) |
 | MCP tools | 30 |
 | Memory layers | 5 |
 | Cortex categories | 5 |
