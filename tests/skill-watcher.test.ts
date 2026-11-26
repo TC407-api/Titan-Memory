@@ -14,7 +14,6 @@ import { getSkillRegistry, resetSkillRegistry } from '../src/skills/registry';
 const EVENT_TIMEOUT_MS = 10000;
 const POLL_MS = 25;
 // Longer than awaitWriteFinish (200 ms stable + 100 ms poll) plus the debounce.
-const PRIME_RETRY_MS = 1000;
 const SETTLE_MS = 1200;
 
 interface SeenEvent {
@@ -94,26 +93,11 @@ describe('SkillWatcher file events (end to end)', () => {
     return created;
   }
 
-  /**
-   * The watcher ignores files that exist before its first scan ends, and it
-   * exposes no ready signal. So keep adding probe skills until one is
-   * reported: from then on the watcher is known to be live.
-   */
-  async function primeWatcher(dir: string = skillsDir): Promise<string> {
-    const deadline = Date.now() + EVENT_TIMEOUT_MS;
-    for (let attempt = 1; Date.now() < deadline; attempt++) {
-      const probe = `probe-${attempt}`;
-      writeSkillFile(dir, probe);
-      const retryAt = Date.now() + PRIME_RETRY_MS;
-      while (Date.now() < retryAt) {
-        const hit = names('loaded').find((n) => n.startsWith('probe-'));
-        if (hit) return hit;
-        await sleep(POLL_MS);
-      }
-    }
-    throw new Error(
-      `the watcher reported no 'loaded' event for a new skill file within ${EVENT_TIMEOUT_MS} ms`
-    );
+  /** Write a skill file and wait until the watcher reports it as loaded. */
+  async function addAndWaitForLoad(dir: string, name: string): Promise<string> {
+    const file = writeSkillFile(dir, name);
+    await waitFor(() => names('loaded').includes(name), `'loaded' for ${name}`);
+    return file;
   }
 
   beforeEach(() => {
@@ -138,16 +122,16 @@ describe('SkillWatcher file events (end to end)', () => {
   it('loads a skill file that is added to the watched directory', async () => {
     startWatcher();
 
-    const probe = await primeWatcher();
+    const file = await addAndWaitForLoad(skillsDir, 'added-skill');
 
-    const hit = seen.find((e) => e.event === 'loaded' && e.name === probe);
-    expect(path.resolve(hit?.file ?? '')).toBe(path.join(skillsDir, `${probe}.skill.md`));
-    expect(getSkillRegistry().has(probe)).toBe(true);
+    const hit = seen.find((e) => e.event === 'loaded' && e.name === 'added-skill');
+    expect(path.resolve(hit?.file ?? '')).toBe(file);
+    expect(getSkillRegistry().has('added-skill')).toBe(true);
   }, 30000);
 
   it('loads a skill file that is added in a subdirectory', async () => {
     startWatcher();
-    await primeWatcher();
+    await addAndWaitForLoad(skillsDir, 'first-skill');
 
     writeSkillFile(path.join(skillsDir, 'custom', 'nested'), 'deep-skill');
 
@@ -161,15 +145,13 @@ describe('SkillWatcher file events (end to end)', () => {
     startWatcher();
     expect(fs.statSync(skillsDir).isDirectory()).toBe(true);
 
-    const probe = await primeWatcher();
-    expect(getSkillRegistry().has(probe)).toBe(true);
+    await addAndWaitForLoad(skillsDir, 'in-new-dir');
+    expect(getSkillRegistry().has('in-new-dir')).toBe(true);
   }, 30000);
 
   it('reloads a changed skill file and unloads a deleted one', async () => {
     startWatcher();
-    await primeWatcher();
-    const file = writeSkillFile(skillsDir, 'cycle-skill');
-    await waitFor(() => names('loaded').includes('cycle-skill'), "'loaded' for cycle-skill");
+    const file = await addAndWaitForLoad(skillsDir, 'cycle-skill');
 
     writeSkillFile(skillsDir, 'cycle-skill', 'a longer body than before');
     await waitFor(() => names('reloaded').includes('cycle-skill'), "'reloaded' for cycle-skill");
@@ -181,8 +163,6 @@ describe('SkillWatcher file events (end to end)', () => {
 
   it('reports nothing for ignored directories, declaration files and other file types', async () => {
     startWatcher();
-    await primeWatcher();
-
     writeSkillFile(path.join(skillsDir, '.disabled'), 'disabled-skill');
     writeSkillFile(path.join(skillsDir, 'node_modules', 'pkg'), 'vendored-skill');
     writeSkillFile(path.join(skillsDir, 'custom', 'dist'), 'built-skill');
@@ -192,7 +172,7 @@ describe('SkillWatcher file events (end to end)', () => {
     await waitFor(() => names('loaded').includes('kept-skill'), "'loaded' for kept-skill");
     await sleep(SETTLE_MS);
 
-    expect(names('loaded').filter((n) => !n.startsWith('probe-'))).toEqual(['kept-skill']);
+    expect(names('loaded')).toEqual(['kept-skill']);
     expect(names('error')).toEqual([]);
     // The loader warns about any file it is handed and cannot load, so a
     // declaration or text file that got through the filter shows up here.
@@ -207,9 +187,9 @@ describe('SkillWatcher file events (end to end)', () => {
     skillsDir = path.join(tempRoot, 'dist', 'node_modules', 'tenant', 'skills');
 
     startWatcher();
-    const probe = await primeWatcher();
+    await addAndWaitForLoad(skillsDir, 'tenant-skill');
 
-    expect(getSkillRegistry().has(probe)).toBe(true);
+    expect(getSkillRegistry().has('tenant-skill')).toBe(true);
   }, 30000);
 
   it('does not load skills that are reached through a symbolic link', async () => {
@@ -218,8 +198,6 @@ describe('SkillWatcher file events (end to end)', () => {
     writeSkillFile(outside, 'behind-dir-link');
     const linkedFileTarget = writeSkillFile(path.join(tempRoot, 'elsewhere'), 'behind-file-link');
     startWatcher();
-    await primeWatcher();
-
     expect(tryLink(outside, path.join(skillsDir, 'linked'), 'dir')).toBe(true);
     tryLink(linkedFileTarget, path.join(skillsDir, 'direct-link.skill.md'), 'file');
     await sleep(SETTLE_MS);
@@ -228,7 +206,7 @@ describe('SkillWatcher file events (end to end)', () => {
     await waitFor(() => names('loaded').includes('kept-skill'), "'loaded' for kept-skill");
     await sleep(SETTLE_MS);
 
-    expect(names('loaded').filter((n) => !n.startsWith('probe-'))).toEqual(['kept-skill']);
+    expect(names('loaded')).toEqual(['kept-skill']);
     expect(getSkillRegistry().has('behind-dir-link')).toBe(false);
     expect(getSkillRegistry().has('behind-file-link')).toBe(false);
     expect(getSkillRegistry().has('added-behind-dir-link')).toBe(false);
@@ -240,9 +218,7 @@ describe('SkillWatcher file events (end to end)', () => {
     const outside = path.join(tempRoot, 'outside');
     skillsDir = path.join(tempRoot, 'skills');
     writeSkillFile(outside, 'behind-link');
-    const started = startWatcher();
-    await primeWatcher();
-    expect(tryLink(outside, path.join(skillsDir, 'linked'), 'dir')).toBe(true);
+    const started = startWatcher();    expect(tryLink(outside, path.join(skillsDir, 'linked'), 'dir')).toBe(true);
     const linkedFile = path.join(skillsDir, 'linked', 'behind-link.skill.md');
 
     const handlers = started as unknown as { loadFile(event: 'add', file: string): Promise<void> };
@@ -253,15 +229,79 @@ describe('SkillWatcher file events (end to end)', () => {
     expect(getSkillRegistry().has('behind-link')).toBe(false);
   }, 30000);
 
+  it('loads the .skill.md files that are already there when start() is called', async () => {
+    writeSkillFile(skillsDir, 'present-skill');
+    writeSkillFile(path.join(skillsDir, 'custom'), 'present-nested');
+    writeSkillFile(path.join(skillsDir, '.disabled'), 'present-but-ignored');
+
+    startWatcher();
+
+    await waitFor(
+      () => names('loaded').includes('present-skill') && names('loaded').includes('present-nested'),
+      "'loaded' for the files that were there before start()"
+    );
+    expect(getSkillRegistry().has('present-skill')).toBe(true);
+    expect(getSkillRegistry().has('present-nested')).toBe(true);
+    await sleep(SETTLE_MS);
+    expect(getSkillRegistry().has('present-but-ignored')).toBe(false);
+  }, 30000);
+
+  it('loads a file that is written right after start() returns', async () => {
+    // Before the first scan has finished: the file is either found by that
+    // scan or reported as added, and loaded either way.
+    startWatcher();
+    writeSkillFile(skillsDir, 'right-after-start');
+
+    await waitFor(() => names('loaded').includes('right-after-start'), "'loaded' for right-after-start");
+    expect(getSkillRegistry().has('right-after-start')).toBe(true);
+  }, 30000);
+
+  describe.each([
+    ['a link to a file outside the skills directory', 'file'],
+    ['a dangling link', 'dangling'],
+  ])('a loaded skill file that is replaced by %s', (_label, kind) => {
+    it('is unloaded, and the link is not read', async () => {
+      skillsDir = path.join(tempRoot, 'skills');
+      const outsideFile = writeSkillFile(path.join(tempRoot, 'outside'), 'outside-skill');
+      const target = kind === 'file' ? outsideFile : path.join(tempRoot, 'missing.skill.md');
+      startWatcher();      const file = writeSkillFile(skillsDir, 'swapped-skill');
+      await waitFor(() => names('loaded').includes('swapped-skill'), "'loaded' for swapped-skill");
+
+      // Atomic replacement: create the link next to the file, rename it over the file.
+      const linkPath = path.join(skillsDir, 'swap.tmp');
+      if (!tryLink(target, linkPath, 'file')) return; // Windows without Developer Mode
+      fs.renameSync(linkPath, file);
+
+      await waitFor(() => names('unloaded').includes('swapped-skill'), "'unloaded' for swapped-skill");
+      expect(getSkillRegistry().has('swapped-skill')).toBe(false);
+      expect(getSkillRegistry().has('outside-skill')).toBe(false);
+      // A dangling link can be reported as a delete, which needs no error.
+      if (kind === 'file') expect(errorsFor(file).join('\n')).toContain('symbolic link');
+    }, 30000);
+  });
+
+  it('watches a skills directory that is itself a link', async () => {
+    const realDir = path.join(tempRoot, 'real-skills');
+    fs.mkdirSync(realDir);
+    skillsDir = path.join(tempRoot, 'linked-skills');
+    expect(tryLink(realDir, skillsDir, 'dir')).toBe(true);
+    startWatcher();
+    const file = writeSkillFile(skillsDir, 'via-linked-root');
+    await waitFor(() => names('loaded').includes('via-linked-root'), "'loaded' for via-linked-root");
+
+    // Registered under the configured path, so a delete through it unloads the skill.
+    expect(getSkillRegistry().getFile('via-linked-root')?.path).toBe(file);
+    fs.rmSync(file);
+    await waitFor(() => names('unloaded').includes('via-linked-root'), "'unloaded' for via-linked-root");
+  }, 30000);
+
   describe.each([
     ['the default patterns', undefined],
     ['patterns that name code files', ['**/*.js', '**/*.ts', '**/*.skill.md']],
   ])('code files with %s', (_label, patterns) => {
     it('are never loaded, reloaded or unloaded', async () => {
       const codeFiles = ['plain.js', 'source.ts', 'named.skill.js', 'named.skill.ts'];
-      startWatcher(patterns ? { patterns } : {});
-      await primeWatcher();
-      // A code skill that something else registered from a file in this directory.
+      startWatcher(patterns ? { patterns } : {});      // A code skill that something else registered from a file in this directory.
       const registered = path.join(skillsDir, 'plain.js');
       getSkillRegistry().register({
         path: registered,
@@ -285,9 +325,9 @@ describe('SkillWatcher file events (end to end)', () => {
       fs.rmSync(kept);
       await waitFor(() => names('unloaded').includes('kept-skill'), "'unloaded' for kept-skill");
 
-      // Every event is about the .skill.md files: kept-skill and the probes.
+      // Every event is about the .skill.md file kept-skill.
       const aboutOtherFiles = seen.filter(
-        (e) => e.name !== 'kept-skill' && !e.name.startsWith('probe-')
+        (e) => e.name !== 'kept-skill'
       );
       expect(aboutOtherFiles).toEqual([]);
       expect(names('error')).toEqual([]);
@@ -301,9 +341,7 @@ describe('SkillWatcher file events (end to end)', () => {
   });
 
   it('keeps a disabled skill disabled when its file is saved again', async () => {
-    startWatcher();
-    await primeWatcher();
-    writeSkillFile(skillsDir, 'quiet-skill');
+    startWatcher();    writeSkillFile(skillsDir, 'quiet-skill');
     await waitFor(() => names('loaded').includes('quiet-skill'), "'loaded' for quiet-skill");
     expect(getSkillRegistry().disable('quiet-skill')).toBe(true);
 
@@ -316,9 +354,7 @@ describe('SkillWatcher file events (end to end)', () => {
   }, 30000);
 
   it('keeps a disabled skill disabled through a broken save and a repaired one', async () => {
-    startWatcher();
-    await primeWatcher();
-    const file = writeSkillFile(skillsDir, 'mended-skill');
+    startWatcher();    const file = writeSkillFile(skillsDir, 'mended-skill');
     await waitFor(() => names('loaded').includes('mended-skill'), "'loaded' for mended-skill");
     getSkillRegistry().disable('mended-skill');
 
@@ -334,9 +370,7 @@ describe('SkillWatcher file events (end to end)', () => {
   }, 30000);
 
   it('keeps a disabled skill disabled through a broken save and a repair under another name', async () => {
-    startWatcher();
-    await primeWatcher();
-    const file = writeSkillFile(skillsDir, 'before-name');
+    startWatcher();    const file = writeSkillFile(skillsDir, 'before-name');
     await waitFor(() => names('loaded').includes('before-name'), "'loaded' for before-name");
     getSkillRegistry().disable('before-name');
 
@@ -349,9 +383,7 @@ describe('SkillWatcher file events (end to end)', () => {
   }, 30000);
 
   it('reports the old name as unloaded when a save gives the skill another name', async () => {
-    startWatcher();
-    await primeWatcher();
-    const file = writeSkillFile(skillsDir, 'old-title');
+    startWatcher();    const file = writeSkillFile(skillsDir, 'old-title');
     await waitFor(() => names('loaded').includes('old-title'), "'loaded' for old-title");
 
     fs.writeFileSync(file, '---\nname: new-title\ntriggers: [new-title]\n---\nrenamed\n');
@@ -365,14 +397,12 @@ describe('SkillWatcher file events (end to end)', () => {
   it('honours custom patterns and ignored options', async () => {
     const wanted = path.join(skillsDir, 'custom');
     startWatcher({ patterns: ['custom/**/*.skill.md'], ignored: ['**/drafts/**'] });
-    await primeWatcher(wanted);
-
     writeSkillFile(skillsDir, 'outside-skill');
     writeSkillFile(path.join(wanted, 'drafts'), 'draft-skill');
     writeSkillFile(path.join(wanted, 'team'), 'team-skill');
     await waitFor(() => names('loaded').includes('team-skill'), "'loaded' for team-skill");
     await sleep(SETTLE_MS);
 
-    expect(names('loaded').filter((n) => !n.startsWith('probe-'))).toEqual(['team-skill']);
+    expect(names('loaded')).toEqual(['team-skill']);
   }, 30000);
 });

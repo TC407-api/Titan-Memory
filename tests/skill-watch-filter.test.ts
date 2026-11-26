@@ -183,9 +183,12 @@ describe('createWatchFilter', () => {
     }
   });
 
-  it('skips symbolic links below the root, but not the root', () => {
+  it('treats a symbolic link as a file: kept when its path matches a pattern', () => {
+    // So the watcher hears about a skill file that was replaced by a link.
+    // chokidar is told not to follow links, so keeping one walks nothing.
+    expect(shouldSkip(inRoot('custom', 'linked.skill.md'), LINK)).toBe(false);
     expect(shouldSkip(inRoot('linked-dir'), LINK)).toBe(true);
-    expect(shouldSkip(inRoot('custom', 'linked.skill.md'), LINK)).toBe(true);
+    expect(shouldSkip(inRoot('.disabled', 'linked.skill.md'), LINK)).toBe(true);
     expect(shouldSkip(inRoot('custom', 'real.skill.md'), REAL_FILE)).toBe(false);
     expect(shouldSkip(root, LINK)).toBe(false);
   });

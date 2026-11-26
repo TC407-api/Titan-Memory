@@ -92,8 +92,11 @@ function matchesAny(matchers: RegExp[], value: string): boolean {
  * file. Without that, directories would be skipped on the first call and
  * nothing below the root would ever be watched.
  *
- * A symbolic link below the root is skipped, as loadSkillsFromDirectory
- * skips it, so the watcher does not walk into a linked directory.
+ * A symbolic link below the root counts as a file: it is kept when its path
+ * matches `patterns`, so the watcher hears about a skill file that has been
+ * replaced by a link and can unload that skill. The watcher has chokidar
+ * report links without following them, so a linked directory is not walked,
+ * just as loadSkillsFromDirectory does not walk one.
  */
 export function createWatchFilter(options: WatchFilterOptions): WatchFilter {
   const root = path.resolve(options.root);
@@ -109,9 +112,6 @@ export function createWatchFilter(options: WatchFilterOptions): WatchFilter {
     if (relativePath === '') {
       return false;
     }
-    if (stats?.isSymbolicLink?.() === true) {
-      return true;
-    }
     if (
       matchesAny(unwantedBelowRoot, relativePath) ||
       matchesAny(unwantedAnywhere, splitSegments(absolutePath).join('/'))
@@ -119,8 +119,13 @@ export function createWatchFilter(options: WatchFilterOptions): WatchFilter {
       return true;
     }
 
-    return stats?.isFile() === true && !matchesAny(wanted, relativePath);
+    return isFileOrLink(stats) && !matchesAny(wanted, relativePath);
   };
+}
+
+/** True when `stats` describes a file or a symbolic link (not a directory). */
+export function isFileOrLink(stats?: PathKind): boolean {
+  return stats?.isFile() === true || stats?.isSymbolicLink?.() === true;
 }
 
 /**
@@ -138,9 +143,10 @@ export function isMarkdownSkillFile(filePath: string): boolean {
  * itself may be a link. A path that cannot be checked counts as crossing
  * one, so the caller leaves it alone.
  *
- * chokidar follows links by default and reports files behind them under the
- * link's path. Loading such a file would register a skill from outside the
- * skills directory, which loadSkillsFromDirectory never does.
+ * The skill watcher reports a link under its own path, and an event can name
+ * a file below a linked directory. Loading either would register a skill
+ * from outside the skills directory, which loadSkillsFromDirectory never
+ * does.
  *
  * The answer describes the path at the time of the call. The file is opened
  * later, by name, so this is a consistency check and not a guarantee against

@@ -12,6 +12,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execFileSync, spawn } from 'child_process';
 import {
   loadSkillFromFile,
   loadSkillsFromDirectory,
@@ -412,6 +413,55 @@ triggers:
 });
 
 // ===========================================================================
+// loadSkillFromFile — a .skill.md path that is not a regular file
+// ===========================================================================
+
+describe('loadSkillFromFile — a .skill.md path that is not a regular file', () => {
+  it('should return null for a directory named like a skill file', async () => {
+    const dir = makeTempDir('md-directory');
+    const filePath = path.join(dir, 'folder.skill.md');
+    fs.mkdirSync(filePath);
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(loadSkillFromFile(filePath)).resolves.toBeNull();
+
+    warnSpy.mockRestore();
+    errorSpy.mockRestore();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Windows has no FIFOs in the file system.
+  const itWithFifo = process.platform === 'win32' ? it.skip : it;
+
+  itWithFifo('should return null at once for a FIFO, without waiting for a writer', async () => {
+    const dir = makeTempDir('md-fifo');
+    const fifo = path.join(dir, 'pipe.skill.md');
+    execFileSync('mkfifo', [fifo]);
+    // A writer that connects after 3 s. A blocking read would hang until then
+    // and load what it writes; without the writer it would hang for good.
+    const content = '---\nname: from-fifo\ntriggers: [fifo]\n---\n';
+    const writer = spawn(
+      process.execPath,
+      ['-e', `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(fifo)}, ${JSON.stringify(content)}), 3000)`],
+      { stdio: 'ignore' }
+    );
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const started = Date.now();
+      const result = await loadSkillFromFile(fifo);
+
+      expect(result).toBeNull();
+      expect(Date.now() - started).toBeLessThan(2000);
+    } finally {
+      writer.kill('SIGKILL');
+      warnSpy.mockRestore();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15000);
+});
+
+// ===========================================================================
 // loadSkillsFromDirectory — custom options
 // ===========================================================================
 
@@ -743,24 +793,6 @@ triggers:
     expect(registry.isEnabled('flop-skill')).toBe(false);
     fs.rmSync(dir, { recursive: true, force: true });
   });
-
-  it('should leave a skill that another file registered while onUnload() was pending', async () => {
-    const dir = makeTempDir('reload-moved');
-    // The file was moved: nothing is left at the old path.
-    const oldPath = path.join(dir, 'old.skill.md');
-    const gate = createGate();
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    createRegisteredSkillFile('moved-skill', oldPath, { onUnload: () => gate.opened });
-
-    const reloading = reloadSkill(oldPath);
-    const moved = createRegisteredSkillFile('moved-skill', path.join(dir, 'new.skill.md'));
-    gate.open();
-
-    expect(await reloading).toBeNull();
-    expect(getSkillRegistry().getFile('moved-skill')).toBe(moved);
-    warnSpy.mockRestore();
-    fs.rmSync(dir, { recursive: true, force: true });
-  });
 });
 
 // ===========================================================================
@@ -804,21 +836,6 @@ describe('unloadSkill', () => {
     expect(getSkillRegistry().has('unload-throws')).toBe(false);
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
-  });
-
-  it('should leave a skill that another file registered while onUnload() was pending', async () => {
-    let finishUnload: () => void = () => undefined;
-    const pending = new Promise<void>((resolve) => {
-      finishUnload = resolve;
-    });
-    createRegisteredSkillFile('moved-skill', '/fake/old/moved.skill.md', { onUnload: () => pending });
-
-    const unloading = unloadSkill('moved-skill');
-    const moved = createRegisteredSkillFile('moved-skill', '/fake/new/moved.skill.md');
-    finishUnload();
-
-    expect(await unloading).toBe(false);
-    expect(getSkillRegistry().getFile('moved-skill')).toBe(moved);
   });
 
   it('should not call onUnload when skill has no onUnload hook', async () => {

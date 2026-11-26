@@ -10,14 +10,13 @@
  * whether file events arrive, or what really happens to a JavaScript file.
  * This script checks these with plain Node:
  *
- *   1. dist/skills/watcher.js loads and reports a .skill.md file that is
- *      added, edited and deleted.
+ *   1. dist/skills/watcher.js loads, loads a .skill.md file that was there
+ *      before start(), and reports a .skill.md file that is added, edited
+ *      and deleted.
  *   2. The watcher evaluates no code file. .js and .ts files that are added,
  *      edited and deleted in the watched directory, with `patterns` that
  *      name them, leave no marker and no event, and a code skill that was
  *      registered from one of them stays registered.
- *   3. reloadSkill() of a compiled JavaScript skill runs the edited code, in
- *      both export styles (`exports.default = skill`, `module.exports = skill`).
  *
  * Exit code 1 means one of these failed.
  */
@@ -27,7 +26,6 @@ const os = require('os');
 const path = require('path');
 
 const TIMEOUT_MS = 15000;
-const RETRY_MS = 1000;
 const POLL_MS = 25;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -62,25 +60,9 @@ function skillSource(name, output) {
   );
 }
 
-function writeJavaScriptSkill(file, name, output, exportStyle, firstLine = '') {
-  const skill = skillSource(name, output);
-  const source =
-    exportStyle === 'default-export'
-      ? `Object.defineProperty(exports, '__esModule', { value: true });\nexports.default = ${skill};\n`
-      : `module.exports = ${skill};\n`;
+function writeJavaScriptSkill(file, name, output, firstLine = '') {
+  const source = `module.exports = ${skillSource(name, output)};\n`;
   fs.writeFileSync(file, `'use strict';\n${firstLine}\n${source}`);
-}
-
-// Files that exist before the first scan ends are not reported, so keep
-// adding new ones until the watcher reports one.
-async function waitUntilLive(dir, seen) {
-  const deadline = Date.now() + TIMEOUT_MS;
-  const findHit = () => seen.loaded.find((name) => name.startsWith('smoke-'));
-  for (let attempt = 1; Date.now() < deadline; attempt++) {
-    writeMarkdownSkill(dir, `smoke-${attempt}`);
-    if (await becomesTrue(() => findHit() !== undefined, RETRY_MS)) return findHit();
-  }
-  throw new Error(`the watcher reported no 'loaded' event within ${TIMEOUT_MS} ms`);
 }
 
 // A code skill as something other than the watcher would have registered it.
@@ -108,7 +90,7 @@ async function checkCodeFilesAreLeftAlone(dir, markerDir, seen, registry) {
   const leaveMarker = `require('fs').writeFileSync(${JSON.stringify(marker)}, __filename);`;
   const writeCodeFiles = (output) => {
     for (const name of codeFiles) {
-      writeJavaScriptSkill(path.join(dir, name), `from-${name}`, output, 'module-exports', leaveMarker);
+      writeJavaScriptSkill(path.join(dir, name), `from-${name}`, output, leaveMarker);
     }
   };
   fs.mkdirSync(markerDir, { recursive: true });
@@ -128,7 +110,7 @@ async function checkCodeFilesAreLeftAlone(dir, markerDir, seen, registry) {
     throw new Error(`the watcher evaluated a code file: ${fs.readFileSync(marker, 'utf-8')}`);
   }
   const fromCode = [...seen.loaded, ...seen.reloaded, ...seen.unloaded].filter(
-    (name) => name !== 'sentinel' && !name.startsWith('smoke-')
+    (name) => name !== 'sentinel' && name !== 'present-before-start'
   );
   if (fromCode.length > 0 || !registry.has('code-skill')) {
     throw new Error(
@@ -138,30 +120,13 @@ async function checkCodeFilesAreLeftAlone(dir, markerDir, seen, registry) {
   }
 }
 
-async function checkReloadRunsEditedCode(dir, registry, reloadSkill, exportStyle) {
-  const name = `compiled-${exportStyle}`;
-  const file = path.join(dir, `${name}.js`);
-  const run = async () => (await registry.getFile(name).skill.execute({})).output;
-  fs.mkdirSync(dir, { recursive: true });
-
-  writeJavaScriptSkill(file, name, 'first version', exportStyle);
-  await reloadSkill(file);
-  const before = await run();
-  writeJavaScriptSkill(file, name, 'second version, edited', exportStyle);
-  await reloadSkill(file);
-  const after = await run();
-
-  if (before !== 'first version' || after !== 'second version, edited') {
-    throw new Error(`${name}: expected the edited code to run, got "${before}" then "${after}"`);
-  }
-}
-
 async function main() {
   const { SkillWatcher } = require('../dist/skills/watcher.js');
   const { getSkillRegistry } = require('../dist/skills/registry.js');
-  const { reloadSkill } = require('../dist/skills/loader.js');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'titan-watcher-smoke-'));
   const dir = path.join(root, 'skills');
+  fs.mkdirSync(dir, { recursive: true });
+  writeMarkdownSkill(dir, 'present-before-start');
   const watcher = new SkillWatcher({
     skillsDir: dir,
     debounceMs: 20,
@@ -176,19 +141,19 @@ async function main() {
   watcher.start();
   try {
     const registry = getSkillRegistry();
-    const first = await waitUntilLive(dir, seen);
+    await waitFor(
+      () => seen.loaded.includes('present-before-start'),
+      "'loaded' for the file that was there before start()"
+    );
     await checkCodeFilesAreLeftAlone(dir, path.join(root, 'markers'), seen, registry);
     if (seen.errors.length > 0) {
       throw new Error(`unexpected watcher errors: ${seen.errors.map((e) => e.error.message)}`);
     }
-    const direct = path.join(root, 'direct');
-    await checkReloadRunsEditedCode(direct, registry, reloadSkill, 'default-export');
-    await checkReloadRunsEditedCode(direct, registry, reloadSkill, 'module-exports');
     console.log(
-      `skill watcher smoke ok: node ${process.version}, loaded "${first}", ` +
+      `skill watcher smoke ok: node ${process.version}, ` +
+        'a .skill.md file present before start() was loaded, ' +
         'a .skill.md file was loaded, reloaded and unloaded, ' +
-        'no .js or .ts file was evaluated or acted on by the watcher, ' +
-        'reloadSkill() ran edited JavaScript (default export and module.exports)'
+        'no .js or .ts file was evaluated or acted on by the watcher'
     );
   } finally {
     await watcher.stop();

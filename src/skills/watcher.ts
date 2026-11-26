@@ -11,6 +11,7 @@ import { getSkillRegistry } from './registry.js';
 import {
   createWatchFilter,
   crossesSymlink,
+  isFileOrLink,
   isMarkdownSkillFile,
   PathKind,
   WatchFilter,
@@ -45,6 +46,16 @@ type WatcherCallback = (name: string, path?: string, error?: Error) => void;
 /** Stands in for fs.Stats when a path is already known to be a file. */
 const FILE_KIND: PathKind = { isFile: () => true };
 
+/** True when something (a file, a directory, a link, even a broken one) is at `filePath`. */
+function pathExists(filePath: string): boolean {
+  try {
+    fs.lstatSync(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Skill Watcher
  * Watches a skills directory and hot-reloads the .skill.md files in it.
@@ -54,6 +65,12 @@ const FILE_KIND: PathKind = { isFile: () => true };
  * reloads and unloads nothing. Code skills are loaded by
  * loadSkillsFromDirectory() or reloadSkill(); after an edit they need a
  * call to reloadSkill() or a restart.
+ *
+ * A skill the loader builds from a .skill.md file has no onLoad() or
+ * onUnload() hook, and reading the file is synchronous. So each load or
+ * unload the watcher starts is finished before the next file event is
+ * handled, and the loads and unloads of a file happen in the order of its
+ * events.
  */
 export class SkillWatcher {
   private watcher: FSWatcher | null = null;
@@ -63,8 +80,6 @@ export class SkillWatcher {
   private ignored: string[];
   private shouldSkip: WatchFilter;
   private debounceTimers: Map<string, NodeJS.Timeout> = new Map();
-  // The last load or unload queued for each file. See enqueue().
-  private operations: Map<string, Promise<void>> = new Map();
   private callbacks: Map<WatcherEvent, WatcherCallback[]> = new Map();
   private isRunning = false;
 
@@ -83,11 +98,11 @@ export class SkillWatcher {
       patterns: this.patterns,
       ignored: this.ignored,
     });
-    // The one place that decides which files the watcher handles. chokidar
-    // asks it, and so do the event handlers before they queue anything.
+    // The one place that decides which paths the watcher handles. chokidar
+    // asks it, and so do the event handlers before they do anything.
     this.shouldSkip = (candidatePath, stats) =>
       isExcludedByOptions(candidatePath, stats) ||
-      (stats?.isFile() === true && !isMarkdownSkillFile(candidatePath));
+      (isFileOrLink(stats) && !isMarkdownSkillFile(candidatePath));
 
     if (options.autoStart) {
       this.start();
@@ -98,19 +113,21 @@ export class SkillWatcher {
    * Start watching for file changes.
    *
    * Creates the skills directory when it does not exist yet, so there is
-   * always a directory to watch (chokidar 4 reports nothing for a path that
-   * is missing when watch() is called). Throws if it cannot be created.
+   * always a directory to watch. Throws if it cannot be created.
    *
-   * Symbolic links below the skills directory are not followed, the same as
-   * in loadSkillsFromDirectory. The skills directory itself may be a link.
-   * A .skill.md file that is behind a link when its event is handled is not
-   * read: an 'error' event names it, and a skill loaded from that path
-   * earlier is unloaded. See crossesSymlink for what that check covers.
+   * The .skill.md files already in the directory are loaded as well, and
+   * reported as 'loaded', as the first scan finds them. So a file is not
+   * missed because it was written just before or just after start(), and a
+   * restart picks up the skills that are there.
    *
-   * Loads and unloads of one file run one after the other, in the order
-   * their file events arrived, so a file deleted while its reload is still
-   * running (a slow onUnload() of the version being replaced) ends up
-   * unloaded.
+   * Symbolic links below the skills directory are reported under their own
+   * path and never followed, so a linked directory is not walked. A
+   * .skill.md path that is a link, or is below one, when its event is
+   * handled is not read: an 'error' event names it, and a skill loaded from
+   * that path earlier is unloaded. See crossesSymlink for what that check
+   * covers. The skills directory itself may be a link. It is resolved once,
+   * here, so after the link is pointed at another directory the watcher
+   * needs a stop() and start().
    */
   start(): void {
     if (this.isRunning) {
@@ -119,13 +136,19 @@ export class SkillWatcher {
 
     // chokidar 4 and later take paths, not globs. Watch the directory and
     // let the filter pick the files (see watch-filter.ts).
-    const watchedDir = path.resolve(this.skillsDir);
-    fs.mkdirSync(watchedDir, { recursive: true });
+    const configuredDir = path.resolve(this.skillsDir);
+    fs.mkdirSync(configuredDir, { recursive: true });
+    // chokidar does not follow the watched path either when it is a link, so
+    // watch the directory it leads to and report paths below skillsDir.
+    const watchedDir = fs.realpathSync(configuredDir);
+    const toConfiguredPath = (reportedPath: string): string =>
+      path.join(configuredDir, path.relative(watchedDir, path.resolve(reportedPath)));
 
     this.watcher = watch(watchedDir, {
-      ignored: this.shouldSkip,
+      ignored: (candidatePath, stats) => this.shouldSkip(toConfiguredPath(candidatePath), stats),
       persistent: true,
-      ignoreInitial: true,
+      ignoreInitial: false,
+      followSymlinks: false,
       awaitWriteFinish: {
         stabilityThreshold: 200,
         pollInterval: 100,
@@ -133,21 +156,18 @@ export class SkillWatcher {
     });
 
     this.watcher
-      .on('add', (filePath) => this.handleFileChange('add', filePath))
-      .on('change', (filePath) => this.handleFileChange('change', filePath))
-      .on('unlink', (filePath) => this.handleFileUnlink(filePath))
+      .on('add', (filePath) => this.handleFileChange('add', toConfiguredPath(filePath)))
+      .on('change', (filePath) => this.handleFileChange('change', toConfiguredPath(filePath)))
+      .on('unlink', (filePath) => this.handleFileUnlink(toConfiguredPath(filePath)))
       .on('error', (error) => this.emit('error', 'watcher', undefined, error as Error));
 
     this.isRunning = true;
   }
 
   /**
-   * Stop watching for file changes.
-   *
-   * File events that arrive from now on are ignored. stop() does not wait
-   * for skill code: a load or unload that was already queued for an earlier
-   * event still runs to its end, and still reports its event, after stop()
-   * has returned.
+   * Stop watching for file changes. Loads that are still waiting for their
+   * debounce are dropped, and file events that arrive from now on are
+   * ignored.
    */
   async stop(): Promise<void> {
     if (!this.isRunning || !this.watcher) {
@@ -215,7 +235,7 @@ export class SkillWatcher {
     // Set new debounced timer
     const timer = setTimeout(() => {
       this.debounceTimers.delete(filePath);
-      this.enqueue(filePath, () => this.loadFile(eventType, filePath));
+      this.runReportingErrors(filePath, () => this.loadFile(eventType, filePath));
     }, this.debounceMs);
 
     this.debounceTimers.set(filePath, timer);
@@ -237,36 +257,21 @@ export class SkillWatcher {
       this.debounceTimers.delete(filePath);
     }
 
-    this.enqueue(filePath, () => this.unloadFile(filePath));
+    this.runReportingErrors(filePath, () => this.unloadFile(filePath));
   }
 
-  /**
-   * Run `operation` once every operation queued earlier for the same file
-   * has finished. Without this a delete that arrives while a load is still
-   * running finds nothing to unload, and the load then registers a skill
-   * whose file is gone. An onLoad() or onUnload() that never settles holds
-   * back the later operations for its own file only.
-   */
-  private enqueue(filePath: string, operation: () => Promise<void>): void {
-    const earlier = this.operations.get(filePath) ?? Promise.resolve();
-    const current: Promise<void> = earlier.then(async () => {
-      try {
-        await operation();
-      } catch (error) {
-        this.emit('error', filePath, filePath, error as Error);
-      }
-      if (this.operations.get(filePath) === current) {
-        this.operations.delete(filePath);
-      }
+  /** Run a load or unload of `filePath`, and report a failure as an 'error' event. */
+  private runReportingErrors(filePath: string, operation: () => Promise<void>): void {
+    operation().catch((error: unknown) => {
+      this.emit('error', filePath, filePath, error as Error);
     });
-    this.operations.set(filePath, current);
   }
 
   /** Load or reload the skill in `filePath` and report what happened. */
   private async loadFile(eventType: 'add' | 'change', filePath: string): Promise<void> {
     if (crossesSymlink(this.skillsDir, filePath)) {
-      // Deleted since the event, or not a plain file below skillsDir.
-      if (fs.existsSync(filePath)) {
+      // A link now, or below one, or deleted since the event.
+      if (pathExists(filePath)) {
         const reason = `${filePath} is outside the skills directory or behind a symbolic link`;
         this.emit('error', filePath, filePath, new Error(`Skill not loaded: ${reason}`));
       }

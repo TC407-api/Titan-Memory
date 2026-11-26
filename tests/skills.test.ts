@@ -273,6 +273,22 @@ describe('Skill System', () => {
       expect(registry.isEnabled('shared-name')).toBe(true);
     });
 
+    it('should keep a disabled file disabled after another file registers its skill name', () => {
+      registry.register(fileAt('/skills/a.skill.md', 'shared-name'));
+      registry.disable('shared-name');
+      registry.register(fileAt('/skills/b.skill.md', 'shared-name'));
+
+      // File a comes back under another name, without enable() being called.
+      registry.register(fileAt('/skills/a.skill.md', 'renamed'));
+
+      expect(registry.isEnabled('renamed')).toBe(false);
+      // The disable of shared-name also covers the skill b registered under it,
+      // and enabling that name leaves file a disabled.
+      expect(registry.isEnabled('shared-name')).toBe(false);
+      expect(registry.enable('shared-name')).toBe(true);
+      expect(registry.isEnabled('renamed')).toBe(false);
+    });
+
     it('should list all skills', () => {
       registry.register(createSkillFile(createTestSkill('list-a', ['a'])));
       registry.register(createSkillFile(createTestSkill('list-b', ['b'])));

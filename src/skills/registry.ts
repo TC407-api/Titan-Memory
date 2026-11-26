@@ -19,8 +19,8 @@ export class SkillRegistry {
   private listeners: SkillEventListener[] = [];
   private executionStats: Map<string, { count: number; totalTimeMs: number }> = new Map();
   private lastReloadAt?: Date;
-  // What disable() was called for: the skill's name and the file it was
-  // loaded from at that time. Kept when the skill is unregistered, so that
+  // Disabled skills, at most one record per file: the file and the skill
+  // name it is disabled under. Kept when the skill is unregistered, so that
   // loading its file again does not make it runnable again.
   private disabledSkills: Array<{ name: string; path: string }> = [];
 
@@ -34,6 +34,8 @@ export class SkillRegistry {
    * re-added file would undo a disable(). The file counts as well as the
    * name because an edit can give the skill in a file another name. The
    * disable then belongs to the new name, and the old name is free again.
+   * Another file registered under a disabled name is disabled as well and
+   * is remembered on its own, so neither file loses its state to the other.
    */
   register(file: SkillFile): void {
     const { metadata } = file;
@@ -192,9 +194,14 @@ export class SkillRegistry {
     );
   }
 
-  /** Remember one entry for this name and file, in place of older ones for either. */
+  /**
+   * Remember this file as disabled under this name, in place of an older
+   * record of the same file: a file whose skill was renamed frees its old
+   * name. Records of other files stay, also those under the same name, so
+   * each file keeps its own disabled state when the names part again.
+   */
   private rememberDisabledSkill(name: string, filePath: string): void {
-    this.forgetDisabledSkill(name, filePath);
+    this.disabledSkills = this.disabledSkills.filter((skill) => skill.path !== filePath);
     this.disabledSkills.push({ name, path: filePath });
   }
 

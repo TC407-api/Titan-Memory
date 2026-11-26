@@ -1,12 +1,10 @@
 /**
- * Ordering tests for SkillWatcher: what happens when a file event arrives
- * while an earlier load of the same file is still running, and which files
- * reach the loader at all.
+ * Tests for which file events reach the loader: none after the watcher has
+ * stopped, and only those for .skill.md files.
  *
- * A load takes time when the version it replaces has an asynchronous
- * onUnload(). A .skill.md skill has no hooks of its own, so reloadSkill is
- * replaced here by a version that does the real load and then waits before
- * it registers the skill. Files, chokidar events and the registry are real.
+ * reloadSkill and unloadSkill are wrapped in mocks that call the real
+ * functions, so the tests can see what the watcher hands them. Files,
+ * chokidar events and the registry are real.
  */
 
 import * as fs from 'fs';
@@ -31,7 +29,6 @@ const unloadSkillMock = loader.unloadSkill as jest.MockedFunction<typeof loader.
 
 const EVENT_TIMEOUT_MS = 10000;
 const POLL_MS = 25;
-const PRIME_RETRY_MS = 1000;
 // Longer than awaitWriteFinish (200 ms stable + 100 ms poll) plus the debounce.
 const SETTLE_MS = 1200;
 
@@ -52,55 +49,18 @@ async function waitFor(check: () => boolean, what: string): Promise<void> {
   throw new Error(`timed out after ${EVENT_TIMEOUT_MS} ms waiting for ${what}`);
 }
 
-describe('SkillWatcher ordering of events for one file', () => {
+describe('SkillWatcher: which file events reach the loader', () => {
   let skillsDir: string;
   let watcher: SkillWatcher;
   let seen: Array<{ event: string; name: string }> = [];
   let warnSpy: jest.SpyInstance;
-  let releaseLoad: () => void = () => undefined;
-  let slowLoadsStarted = 0;
 
   const names = (event: string): string[] =>
     seen.filter((e) => e.event === event).map((e) => e.name);
 
-  /**
-   * Make the next load of `slowFile` wait: the file has been read, the skill
-   * is not registered yet.
-   */
-  function holdNextLoadOf(slowFile: string): void {
-    const released = new Promise<void>((resolve) => {
-      releaseLoad = resolve;
-    });
-    reloadSkillMock.mockImplementation(async (skillPath) => {
-      if (skillPath !== slowFile || slowLoadsStarted > 0) {
-        return actualLoader.reloadSkill(skillPath);
-      }
-      slowLoadsStarted += 1;
-      const skillFile = await actualLoader.loadSkillFromFile(skillPath);
-      await released;
-      if (skillFile) getSkillRegistry().register(skillFile);
-      return skillFile;
-    });
-  }
-
-  async function primeWatcher(): Promise<void> {
-    const deadline = Date.now() + EVENT_TIMEOUT_MS;
-    for (let attempt = 1; Date.now() < deadline; attempt++) {
-      writeSkillFile(skillsDir, `probe-${attempt}`);
-      const retryAt = Date.now() + PRIME_RETRY_MS;
-      while (Date.now() < retryAt) {
-        if (names('loaded').some((n) => n.startsWith('probe-'))) return;
-        await sleep(POLL_MS);
-      }
-    }
-    throw new Error(`the watcher reported no 'loaded' event within ${EVENT_TIMEOUT_MS} ms`);
-  }
-
   beforeEach(() => {
     resetSkillRegistry();
     seen = [];
-    slowLoadsStarted = 0;
-    reloadSkillMock.mockImplementation(actualLoader.reloadSkill);
     reloadSkillMock.mockClear();
     unloadSkillMock.mockClear();
     skillsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'titan-skill-order-'));
@@ -113,73 +73,14 @@ describe('SkillWatcher ordering of events for one file', () => {
   });
 
   afterEach(async () => {
-    releaseLoad();
     await watcher.stop();
     warnSpy.mockRestore();
     fs.rmSync(skillsDir, { recursive: true, force: true });
   });
 
-  it('unloads a skill whose file is deleted while its load is still running', async () => {
-    await primeWatcher();
-    const slowFile = path.join(skillsDir, 'slow-skill.skill.md');
-    holdNextLoadOf(slowFile);
-
-    writeSkillFile(skillsDir, 'slow-skill');
-    await waitFor(() => slowLoadsStarted === 1, 'the slow load to start');
-    fs.rmSync(slowFile);
-    await sleep(SETTLE_MS);
-    releaseLoad();
-
-    await waitFor(() => names('unloaded').includes('slow-skill'), "'unloaded' for slow-skill");
-    expect(getSkillRegistry().has('slow-skill')).toBe(false);
-    expect(seen.map((e) => `${e.event}:${e.name}`).filter((e) => e.endsWith(':slow-skill'))).toEqual([
-      'loaded:slow-skill',
-      'unloaded:slow-skill',
-    ]);
-  }, 30000);
-
-  it('runs a second save of the same file only after the first load has finished', async () => {
-    await primeWatcher();
-    const slowFile = path.join(skillsDir, 'twice-skill.skill.md');
-    holdNextLoadOf(slowFile);
-
-    writeSkillFile(skillsDir, 'twice-skill');
-    await waitFor(() => slowLoadsStarted === 1, 'the slow load to start');
-    writeSkillFile(skillsDir, 'twice-skill', 'saved again while the first load is running');
-    await sleep(SETTLE_MS);
-
-    const loadsOf = (): number =>
-      reloadSkillMock.mock.calls.filter(([skillPath]) => skillPath === slowFile).length;
-    expect(loadsOf()).toBe(1);
-    releaseLoad();
-
-    await waitFor(() => names('reloaded').includes('twice-skill'), "'reloaded' for twice-skill");
-    expect(loadsOf()).toBe(2);
-    expect(getSkillRegistry().has('twice-skill')).toBe(true);
-  }, 30000);
-
-  it('stops without waiting for a running load, and still applies the delete seen before the stop', async () => {
-    await primeWatcher();
-    const slowFile = path.join(skillsDir, 'halted-skill.skill.md');
-    holdNextLoadOf(slowFile);
-
-    writeSkillFile(skillsDir, 'halted-skill');
-    await waitFor(() => slowLoadsStarted === 1, 'the slow load to start');
-    fs.rmSync(slowFile);
-    await sleep(SETTLE_MS);
-
-    // stop() returns while the load is still held.
-    await watcher.stop();
-    expect(watcher.isWatching()).toBe(false);
-    expect(getSkillRegistry().has('halted-skill')).toBe(false);
-
-    releaseLoad();
-    await waitFor(() => names('unloaded').includes('halted-skill'), "'unloaded' for halted-skill");
-    expect(getSkillRegistry().has('halted-skill')).toBe(false);
-  }, 30000);
-
   it('ignores file events that arrive after the watcher is stopped', async () => {
-    await primeWatcher();
+    writeSkillFile(skillsDir, 'early-skill');
+    await waitFor(() => names('loaded').includes('early-skill'), "'loaded' for early-skill");
     const callsBefore = reloadSkillMock.mock.calls.length;
 
     // Written inside the debounce and write-finish window, then stopped.
